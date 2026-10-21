@@ -11,7 +11,8 @@ Default path `~/Documents/Obsidian/books` (override with `--vault` or `BOOKS_VAU
 ```
 1. <Novel>/ … 19. <Novel>/   novels: "<number>. <Name>" (number < 20)
   config.md            novel settings in frontmatter (see below)
-  Chapters/            chapter notes; number from frontmatter `chapter` or leading digits of the file name
+  Chapters/            chapter notes `NNN - Title.md` (Templater Chapter template); number from frontmatter `chapter` or the
+                       leading number of the file name; fractional chapters exist (048.5). Empty notes are placeholders, not "written"
   Characters/          character sheets, flat: <Name>.md
   Ledgers/             <Owner> - <Ledger Type>.md
   Plan/Book Plan/       volumes (grand plan), Plan/Chapter Plans/  chapter plans, Plots/  graded plot ideas (see Plans)

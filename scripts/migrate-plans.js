@@ -11,7 +11,7 @@ import { Vault, SCHEMA_NOTE } from "../lib/vault.js";
 import { Novels } from "../lib/novels.js";
 import { Blueprints } from "../lib/blueprints.js";
 import { DataStore } from "../lib/datastore.js";
-import { Plans, PLAN_DEFAULTS } from "../lib/plans.js";
+import { Plans, PLAN_DEFAULTS, padChapter } from "../lib/plans.js";
 import { patchNote, atomicWrite, uniqueName } from "../lib/write.js";
 import { normalizeOutline } from "../public/outline.js";
 
@@ -75,7 +75,7 @@ for (const novel of novels.list()) {
         const unset = ["ordered"];
         if (String(c.fm.title ?? "") === String(n)) unset.push("title");
         await patch(c.path, { type: "chapter-plan", plan: normalizeOutline(c.fm.plan ?? "") }, unset);
-        await rename(c.path, `Plan ${String(n).padStart(3, "0")} (${novel.name})`, PLAN_DEFAULTS.chapters.label);
+        await rename(c.path, `Plan ${padChapter(n)} (${novel.name})`, PLAN_DEFAULTS.chapters.label);
     }
     if (write) for (const p of await plans.syncVolumes(novel)) log("volume text", p);
 

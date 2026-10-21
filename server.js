@@ -201,7 +201,7 @@ const routes = {
     "POST /api/plan/chapter": async ({ req }) => {
         const b = await json(req);
         const n = Number(need(b.n, "chapter"));
-        if (!Number.isInteger(n) || n < 0) throw fail(400, "Chapter must be a whole number");
+        if (!Number.isFinite(n) || n < 0) throw fail(400, "Chapter must be a number");
         return plans.saveChapterPlan(getNovel(b.novel), n, { set: b.set ?? {}, baseMtime: b.baseMtime });
     },
     "POST /api/plan/volume": async ({ req }) => {

@@ -1008,7 +1008,7 @@ function ChapterRow({ folder, c }) {
         <div class="chapter-head">
             <span class="badge">${c.number}</span>
             <b>${c.title || html`<span class="muted">Untitled</span>`}</b>
-            ${c.notePath ? html`<span class="badge ok">written</span>` : html`<span class="badge">planned</span>`}
+            ${c.written ? html`<span class="badge ok">written</span>` : c.notePath ? html`<span class="badge" title="The chapter note has no text yet">empty note</span>` : html`<span class="badge">planned</span>`}
             ${c.draft && html`<span class="badge">draft</span>`}
             ${!c.plan.trim() && html`<span class="badge warn">no plan</span>`}
             ${c.entries > 0 && html`<span class="chip">${c.entries} entries</span>`}
