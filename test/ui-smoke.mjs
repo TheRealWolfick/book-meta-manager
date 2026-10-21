@@ -241,5 +241,57 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
     await wait(700);
     check(!root.style.getPropertyValue("--novel-accent"), "pages outside a novel use the default accent");
 }
+// stats: build a template in the editor, assign it, save a Stats entry through the prefilled form
+{
+    const doc = w.document;
+    const novelA = index.novels.find((n) => n.name === "Sample Novel");
+    if (novelA) {
+        const fire = (el, type) => el.dispatchEvent(new w.Event(type, { bubbles: true }));
+        const setVal = (el, v, type = "input") => { el.value = v; fire(el, type); };
+        const btn = (label, root = doc) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+        globalThis.prompt = () => "Hero";
+        w.location.hash = `#/novel/${enc(novelA.folder)}`;
+        await wait(900);
+        [...doc.querySelectorAll(".tabs button")].find((b) => b.textContent.trim() === "Stats").click();
+        await wait(900);
+        btn("+ Template").click(); await wait(100);
+        btn("+ Field").click(); await wait(50);
+        btn("+ Field").click(); await wait(50);
+        const rows = () => [...doc.querySelectorAll(".field-row")];
+        setVal(rows()[0].querySelector("input[aria-label=Label]"), "Level"); await wait(50);
+        setVal(rows()[1].querySelector("input[aria-label=Label]"), "Power"); await wait(50);
+        setVal(rows()[1].querySelector("select[aria-label=Type]"), "computed", "change"); await wait(50);
+        setVal([...rows()[1].querySelectorAll("input")].find((i) => i.placeholder.startsWith("strength")), "level * 10"); await wait(50);
+        rows()[0].querySelector("input[type=checkbox]").click(); await wait(50); // whole numbers
+        btn("Save templates").click();
+        await wait(1200);
+        const cfg = fs.readFileSync(`${COPY}/${novelA.folder}/config.md`, "utf8");
+        check(/stat-templates:\s*\n\s+Hero:/.test(cfg) && cfg.includes("key: stats/level") && cfg.includes("formula: level * 10") && cfg.includes("integer: true"), "template editor saves to config.md", cfg.slice(cfg.indexOf("stat-templates"), cfg.indexOf("stat-templates") + 300));
+
+        // jsdom gets no live updates: reopen the tab to load the saved templates
+        w.location.hash = "#/qa"; await wait(500);
+        w.location.hash = `#/novel/${enc(novelA.folder)}`; await wait(1200);
+        const heroRow = [...doc.querySelectorAll(".templates-editor ~ div tr, .grid2 tr")].find((tr) => tr.textContent.includes("Sample Character"));
+        setVal(heroRow.querySelector("select"), "Hero", "change");
+        await wait(1000);
+        check(fs.readFileSync(`${COPY}/${novelA.folder}/Characters/Sample Character.md`, "utf8").includes("stat-template: Hero"), "assigning a template writes stat-template");
+
+        w.location.hash = `#/entry/${enc(novelA.folder)}?owner=${enc("Sample Character")}&type=Stats&chapter=20`;
+        await wait(1500);
+        const levelLabel = [...doc.querySelectorAll(".stat-lines label")].find((l) => l.textContent === "Level");
+        const levelInput = levelLabel?.nextElementSibling.querySelector("input");
+        check(!!levelInput, "Stats entry shows the template as a form");
+        setVal(levelInput, "4"); await wait(800);
+        setVal([...doc.querySelectorAll("input")].find((x) => (x.getAttribute("placeholder") ?? "").startsWith("Short summary")), "Level up"); await wait(500);
+        btn("Save").click();
+        await wait(1500);
+        const ledger = fs.readFileSync(`${COPY}/${novelA.folder}/Ledgers/Sample Character - Stats.md`, "utf8");
+        check(ledger.includes("[set:: stats/level] [value:: 4]") && !ledger.includes("stats/power"), "only changed stats become ledger lines", ledger.slice(-300));
+        w.location.hash = `#/owner/${enc(novelA.folder)}/${enc("Sample Character")}`;
+        await wait(1500);
+        const panel = doc.querySelector(".stats-panel")?.textContent ?? "";
+        check(/Power\s*40/.test(panel.replace(/\s+/g, " ")) || panel.includes("Power: 40") || /Power.{0,20}40/.test(panel), "owner page shows the stats panel with computed values", panel.slice(0, 200));
+    }
+}
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);

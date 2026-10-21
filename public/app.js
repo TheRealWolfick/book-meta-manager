@@ -3,6 +3,7 @@ import { h, render } from "preact";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
 import htm from "htm";
 import { parseOutline, serializeOutline } from "./outline.js";
+import { FIELD_TYPES, normalizeTemplates, checkTemplate, checkValue, fromText, toText, parseResource, computeValues, displayValue, defaultKey, fieldId, namesField, fieldNamed } from "./stats-core.js";
 
 const html = htm.bind(h);
 
@@ -696,7 +697,12 @@ function FieldsEditor({ page, index, spec, scope, linkOptions }) {
     const mtime = Math.max(page.mtime, saved.mtime);
     const defs = new Map(spec?.fields ?? []);
     const generated = new Set(spec?.generated ?? []);
-    const keys = [...defs.keys(), ...Object.keys(fm).filter((k) => !defs.has(k))].filter((k) => k !== "images");
+    // stat template fields of a character sheet / creature note get typed inputs in their own block
+    const statsInfo = page.stats;
+    const tplName = "stat-template" in edits ? edits["stat-template"] : fm["stat-template"] || statsInfo?.holder.template || "";
+    const statTpl = statsInfo?.templates?.[tplName] ?? null;
+    const statKeys = new Set(statTpl?.fields.map((f) => f.key) ?? []);
+    const keys = [...defs.keys(), ...Object.keys(fm).filter((k) => !defs.has(k))].filter((k) => k !== "images" && k !== "stat-template" && !statKeys.has(k));
     const changed = Object.keys(edits).filter((k) => !sameValue(edits[k], fm[k]));
     const dirty = changed.length > 0;
     useEffect(() => markDirty(scope, page.path, dirty), [dirty]);
@@ -728,6 +734,7 @@ function FieldsEditor({ page, index, spec, scope, linkOptions }) {
             <label class=${changed.includes(k) ? "changed" : ""}>${k}</label>
             ${readOnly(k) ? html`<div class="ro"><${Value} v=${fm[k]} links=${page.links} index=${index} /></div>` : input(k)}`)}
         </div>
+        ${statsInfo && html`<${SheetStats} info=${statsInfo} tpl=${statTpl} tplName=${tplName} fm=${fm} edits=${edits} edit=${edit} changed=${changed} index=${index} />`}
         ${err && html`<p class="error">${err}</p>`}
         <div class=${`savebar ${dirty ? "dirty" : ""}`}>
             <button class="primary" disabled=${!dirty || busy} onClick=${save}>${busy ? "Saving…" : "Save changes"}</button>
@@ -766,6 +773,7 @@ function NoteView({ index, path, scope = "page" }) {
             <div>
                 ${page.heldBy?.length > 0 && html`<div class="panel"><h3>Held by</h3>${page.heldBy.map((x) => html`<div><a href=${`#/owner/${encodeURIComponent(x.novel)}/${encodeURIComponent(x.owner)}`}>${x.owner}</a> <span class="muted">${x.qtyText}${x.store !== "inventory" ? ` @ ${x.store}` : ""} · ${x.novel}</span></div>`)}</div>`}
                 ${page.whereUsed?.length > 0 && html`<div class="panel"><h3>Used in</h3><${WhereUsed} uses=${page.whereUsed} /></div>`}
+                ${page.creatureStats && html`<${CreatureNovels} page=${page} index=${index} />`}
                 <div class="panel"><${ImageDrop} path=${page.path} /></div>
             </div>
         </div>
@@ -987,7 +995,200 @@ const ownerHref = (folder, owner) => `#/owner/${encodeURIComponent(folder)}/${en
 const chapterHref = (folder, n) => `#/chapter/${encodeURIComponent(folder)}/${n}`;
 const entryHref = (folder, p) => `#/entry/${encodeURIComponent(folder)}?${qs(p)}`;
 
-const NOVEL_TABS = [["plan", "Grand plan"], ["plots", "Plots"], ["people", "Characters & ledgers"]];
+/** Stat fields on a character sheet or creature note: template choice and typed values */
+function SheetStats({ info, tpl, tplName, fm, edits, edit, changed, index }) {
+    const managed = new Set(info.managed ?? []);
+    const def = Object.values(info.templates ?? {}).find((t) => t.default)?.name;
+    const chosen = "stat-template" in edits ? edits["stat-template"] : fm["stat-template"] ?? "";
+    const typed = (f) => fromText(f, f.key in edits ? edits[f.key] : fm[f.key]);
+    const values = tpl ? Object.fromEntries(tpl.fields.map((f) => [f.key, managed.has(f.key) ? info.values?.[f.key] : typed(f)])) : {};
+    const sections = tpl ? [...new Set(tpl.fields.map((f) => f.section))] : [];
+    return html`<div class="sheet-stats">
+        <div class="spread"><h3 style="margin:0">Stats</h3>
+            <label class=${`row muted ${changed.includes("stat-template") ? "changed" : ""}`}>Template
+                <select value=${chosen} onChange=${(e) => edit("stat-template", e.target.value)}>
+                    <option value="">${info.holder.kind === "character" && def ? `Novel default (${def})` : "None"}</option>
+                    ${Object.keys(info.templates ?? {}).map((n) => html`<option value=${n}>${n}</option>`)}
+                </select></label></div>
+        ${!tpl ? html`<p class="muted">${Object.keys(info.templates ?? {}).length ? "Choose a template to give this note stats." : "This novel has no stat templates yet (novel page, Stats tab)."}</p>`
+        : html`${info.problems?.length > 0 && html`<div class="warnbox">${info.problems.map((p) => html`<div>${p}</div>`)}</div>`}
+            ${sections.map((s) => html`${s && html`<h4 class="stat-section">${s}</h4>`}<div class="formgrid">${tpl.fields.filter((f) => f.section === s).map((f) => {
+                const o = info.origin?.[f.key];
+                const err = !managed.has(f.key) && f.type !== "computed" && statError(index, f, values[f.key]);
+                return html`<label class=${changed.includes(f.key) ? "changed" : ""} title=${f.key}>${f.label}</label>
+                    <div class="stat-cell">${managed.has(f.key)
+                        ? html`<span>${displayValue(tpl, f, values) || "—"}</span> <span class="muted stat-was">set by the Stats ledger${o?.chapter != null ? ` (ch ${o.chapter})` : ""}; change it with a Stats entry</span>`
+                        : html`<${StatInput} field=${f} value=${values[f.key]} onChange=${(v) => edit(f.key, v)} index=${index} template=${tpl} values=${values} />
+                            ${o?.from === "source" && !(f.key in edits) && html`<span class="muted stat-was">prefilled from ${o.field}: ${displayValue(tpl, f, info.values ?? {})}</span>`}`}
+                        ${err && html`<div class="error">${err}</div>`}</div>`;
+            })}</div>`)}`}
+    </div>`;
+}
+
+// ------------------------------------------------------------------ stats: novel tab (templates and who uses them)
+
+const blankTemplate = (name) => ({ name, description: "", default: false, callout: "system", "show-empty": false, panel: "", fields: [] });
+const blankField = () => normalizeTemplates({ t: { fields: [{ label: "", type: "number" }] } }).t.fields[0];
+
+function StatsTab({ folder, novel }) {
+    const index = useIndex();
+    const { data, error } = useApi(`/api/stats/novel?${qs({ novel: folder })}`);
+    if (!data || !index) return html`<${Loading} error=${error} />`;
+    return html`<div>
+        <${TemplatesEditor} key=${folder} folder=${folder} data=${data} index=${index} />
+        <${StatHolders} folder=${folder} data=${data} index=${index} novel=${novel} />
+    </div>`;
+}
+
+function StatHolders({ folder, data, index }) {
+    const [creature, setCreature] = useState("");
+    const [tpl, setTpl] = useState("");
+    const names = Object.keys(data.templates);
+    const def = Object.values(data.templates).find((t) => t.default)?.name;
+    const assign = async (h, name) => {
+        const n = await api.get(`/api/note?${qs({ path: h.path })}`);
+        try { await api.send("PATCH", "/api/note", name ? { path: h.path, set: { "stat-template": name }, baseMtime: n.mtime } : { path: h.path, unset: ["stat-template"], baseMtime: n.mtime }); toast(`${h.name}: ${name || "default"}`); }
+        catch (e) { toast(e.message); }
+    };
+    const used = new Set(data.holders.filter((h) => h.kind === "creature").map((h) => h.creaturePath));
+    const creatures = index.inCollection("Creatures").filter((c) => !used.has(c.path)).map((c) => ({ label: c.name, hint: c.fm.title !== c.name ? c.fm.title : "" }));
+    const addCreature = async () => {
+        try { const r = await api.send("POST", "/api/stats/creature", { novel: folder, creature: toLink(creature), template: tpl }); setCreature(""); openInDrawer(noteHref(r.path)); }
+        catch (e) { toast(e.message); }
+    };
+    const row = (h) => html`<tr key=${h.path}>
+        <td><a href=${noteHref(h.path)}>${h.name}</a>${h.kind === "creature" && h.creaturePath && html` <span class="muted">· <a href=${noteHref(h.creaturePath)}>data store</a></span>`}</td>
+        <td><select value=${h.assigned ? h.template : ""} onChange=${(e) => assign(h, e.target.value)}>
+            <option value="">${h.kind === "character" && def ? `Default (${def})` : "None"}</option>${names.map((n) => html`<option>${n}</option>`)}
+            ${h.assigned && !names.includes(h.template) && html`<option value=${h.template}>${h.template} (missing)</option>`}</select></td>
+        <td>${h.template && names.includes(h.template) && html`<a href=${ownerHref(folder, h.name)} data-page>Stats panel</a>`}</td>
+    </tr>`;
+    return html`<div class="grid2" style="margin-top:14px" data-drawer>
+        <div class="panel"><h3>Characters</h3><table><tbody>${data.holders.filter((h) => h.kind === "character").map(row)}</tbody></table></div>
+        <div class="panel"><h3>Creatures <span class="muted" style="font-weight:400;font-size:12px">base stats in this novel</span></h3>
+            <table><tbody>${data.holders.filter((h) => h.kind === "creature").map(row)}</tbody></table>
+            <div class="row" style="margin-top:10px">
+                <div style="flex:1;min-width:180px"><${Picker} value=${creature} options=${creatures} allowFree=${false} placeholder="Add a creature from the data store…" onChange=${(o) => setCreature(o?.label ?? "")} /></div>
+                <select value=${tpl} onChange=${(e) => setTpl(e.target.value)}><option value="">Template…</option>${names.map((n) => html`<option>${n}</option>`)}</select>
+                <button class="primary small" disabled=${!creature || !tpl} onClick=${addCreature}>Add</button>
+            </div></div>
+    </div>`;
+}
+
+function TemplatesEditor({ folder, data, index }) {
+    const initial = () => Object.values(data.templates).map((t) => ({ ...t, fields: t.fields.map((f) => ({ ...f })), orig: t.name }));
+    const [list, setList] = useState(initial);
+    const [sel, setSel] = useState(0);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const [previewOwner, setPreviewOwner] = useState("");
+    const [preview, setPreview] = useState(null);
+    const saved = JSON.stringify(initial().map(({ orig, ...t }) => t));
+    const dirty = JSON.stringify(list.map(({ orig, ...t }) => t)) !== saved;
+    useEffect(() => markDirty("page", `stat-templates:${folder}`, dirty), [dirty]);
+    useEffect(() => () => markDirty("page", `stat-templates:${folder}`, false), []);
+    // after a save (or an edit in Obsidian) take the vault's version when there are no local edits
+    useEffect(() => { if (!dirty) setList(initial()); }, [data.configMtime]);
+    const t = list[sel];
+    const setT = (patch) => setList(list.map((x, i) => (i === sel ? { ...x, ...patch } : x)));
+    const setField = (fi, patch) => setT({ fields: t.fields.map((f, i) => {
+        if (i !== fi) return f;
+        const next = { ...f, ...patch };
+        // the key follows the label until it is edited by hand
+        if ("label" in patch && f.key === defaultKey(f.label)) next.key = defaultKey(patch.label);
+        next.id = fieldId(next.key);
+        return next;
+    }) });
+    const moveField = (fi, by) => { const fs = [...t.fields]; const j = fi + by; if (j < 0 || j >= fs.length) return; [fs[fi], fs[j]] = [fs[j], fs[fi]]; setT({ fields: fs }); };
+    const problems = t ? checkTemplate(normalizeTemplates({ [t.name || "x"]: t })[t.name || "x"]) : [];
+    const holders = data.holders.filter((h) => h.template && (h.template === t?.orig || !t?.orig));
+    const previewWith = previewOwner || holders[0]?.name || data.holders[0]?.name || "";
+    useEffect(() => {
+        if (!t || !previewWith) { setPreview(null); return; }
+        const tm = setTimeout(() => api.send("POST", "/api/stats/view", { novel: folder, owner: previewWith, template: { ...t, name: t.name || "Draft" } }).then(setPreview).catch((e) => setPreview({ error: e.message })), 350);
+        return () => clearTimeout(tm);
+    }, [JSON.stringify(t), previewWith]);
+    const charFields = useMemo(() => [...new Set([...(index.schema.characters?.fields.map(([k]) => k) ?? [])])], [index]);
+    const sections = t ? [...new Set(t.fields.map((f) => f.section).filter(Boolean))] : [];
+    const collections = Object.keys(index.schema.collections);
+    const save = async () => {
+        setBusy(true); setErr("");
+        try {
+            const renames = Object.fromEntries(list.filter((x) => x.orig && x.orig !== x.name).map((x) => [x.orig, x.name]));
+            await api.send("POST", "/api/stats/templates", { novel: folder, templates: list.map(({ orig, ...x }) => x), renames, baseMtime: data.configMtime });
+            setList(list.map((x) => ({ ...x, orig: x.name })));
+            toast("Templates saved");
+        } catch (e) { setErr(e.message); }
+        setBusy(false);
+    };
+    const addTemplate = () => { const name = prompt("Template name", list.length ? "" : "Character"); if (!name?.trim()) return; setList([...list, blankTemplate(name.trim())]); setSel(list.length); };
+    const removeTemplate = () => {
+        const users = data.holders.filter((h) => h.assigned && h.template === t.orig).map((h) => h.name);
+        if (!confirm(`Delete the ${t.name} template?${users.length ? ` ${users.length} notes use it (${users.slice(0, 5).join(", ")}${users.length > 5 ? "…" : ""}).` : ""}`)) return;
+        setList(list.filter((_, i) => i !== sel)); setSel(0);
+    };
+    return html`<div class="panel templates-editor">
+        <div class="spread"><h2 style="margin:0">Stat templates</h2>
+            <div class="row">${dirty && html`<span class="muted">unsaved changes</span>`}<button onClick=${addTemplate}>+ Template</button>
+                <button class="primary" disabled=${!dirty || busy} onClick=${save}>${busy ? "Saving…" : "Save templates"}</button></div></div>
+        ${err && html`<pre class="error" style="white-space:pre-wrap">${err}</pre>`}
+        ${!list.length ? html`<p class="muted">No templates yet. A template lists the stats a character or creature has in this novel (Level, HP, Skills…) and how its stats panel looks.</p>`
+        : html`<div class="tabs" style="margin-top:10px">${list.map((x, i) => html`<button class=${i === sel ? "on" : ""} onClick=${() => setSel(i)}>${x.name || "Untitled"}${x.default ? " ★" : ""}</button>`)}</div>
+        <div class="formgrid template-meta">
+            <label>Name</label><input value=${t.name} onInput=${(e) => setT({ name: e.target.value })} />
+            <label>Description</label><input value=${t.description} onInput=${(e) => setT({ description: e.target.value })} placeholder="What this template is for" />
+            <label>Options</label><div class="row">
+                <label class="row"><input type="checkbox" style="width:auto" checked=${t.default} onChange=${(e) => setList(list.map((x, i) => ({ ...x, default: i === sel ? e.target.checked : e.target.checked ? false : x.default })))} /> default for characters</label>
+                <label class="row"><input type="checkbox" style="width:auto" checked=${t["show-empty"]} onChange=${(e) => setT({ "show-empty": e.target.checked })} /> show empty fields in panels</label>
+                <label class="row muted">callout <input style="width:110px" value=${t.callout} onInput=${(e) => setT({ callout: e.target.value })} /></label>
+                <button class="small danger" onClick=${removeTemplate}>Delete template</button></div>
+        </div>
+        <h3 style="margin-top:14px">Fields</h3>
+        <datalist id="stat-sections">${sections.map((s) => html`<option value=${s} />`)}</datalist>
+        <datalist id="char-fields">${charFields.map((k) => html`<option value=${k} />`)}</datalist>
+        <div class="field-list">${t.fields.map((f, fi) => html`<div class="field-row" key=${fi}>
+            <div class="field-main">
+                <input aria-label="Label" placeholder="Label" value=${f.label} onInput=${(e) => setField(fi, { label: e.target.value })} />
+                <select aria-label="Type" value=${f.type} onChange=${(e) => setField(fi, { type: e.target.value })}>${Object.entries(FIELD_TYPES).map(([k, v]) => html`<option value=${k}>${v}</option>`)}</select>
+                <input aria-label="Section" placeholder="Section (optional)" list="stat-sections" value=${f.section} onInput=${(e) => setField(fi, { section: e.target.value })} />
+                <input aria-label="Frontmatter key" class="mono" title="Frontmatter key on the sheet" value=${f.key} onInput=${(e) => setField(fi, { key: e.target.value })} />
+                <span class="row"><button class="small" title="Move up" onClick=${() => moveField(fi, -1)}>↑</button><button class="small" title="Move down" onClick=${() => moveField(fi, 1)}>↓</button>
+                    <button class="small danger" title="Remove field" onClick=${() => setT({ fields: t.fields.filter((_, i) => i !== fi) })}>×</button></span>
+            </div>
+            <div class="field-opts">
+                ${(f.type === "number" || f.type === "resource") && html`
+                    <label class="row"><input type="checkbox" style="width:auto" checked=${f.integer} onChange=${(e) => setField(fi, { integer: e.target.checked })} /> whole numbers</label>
+                    <label class="row">min <input type="number" style="width:80px" value=${f.min ?? ""} onInput=${(e) => setField(fi, { min: e.target.value === "" ? null : Number(e.target.value) })} /></label>
+                    <label class="row">${f.type === "resource" ? "fixed max" : "max"} <input type="number" style="width:80px" value=${f.max ?? ""} onInput=${(e) => setField(fi, { max: e.target.value === "" ? null : Number(e.target.value) })} /></label>`}
+                ${f.type === "resource" && html`<label class="row">max from <select value=${f["max-field"]} onChange=${(e) => setField(fi, { "max-field": e.target.value })}><option value="">its own value (80/100)</option>
+                    ${t.fields.filter((x) => x !== f && (x.type === "number" || x.type === "computed")).map((x) => html`<option value=${x.key}>${x.label}</option>`)}</select></label>`}
+                ${f.type === "choice" && html`<label class="row" style="flex:1">options <input style="flex:1" value=${f.options.join(", ")} placeholder="Common, Rare, Epic" onChange=${(e) => setField(fi, { options: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} /></label>`}
+                ${(f.type === "link" || f.type === "links") && html`
+                    <label class="row">from <select value=${f.collection} onChange=${(e) => setField(fi, { collection: e.target.value })}><option value="">any note</option>${collections.map((c) => html`<option value=${c}>${collectionLabel(c)}</option>`)}</select></label>
+                    <label class="row"><input type="checkbox" style="width:auto" checked=${f.describe} onChange=${(e) => setField(fi, { describe: e.target.checked })} /> show descriptions in panels</label>`}
+                ${f.type === "computed" && html`<label class="row" style="flex:1">formula <input class="mono" style="flex:1" value=${f.formula} placeholder="strength * 2 + floor(level / 5)" onInput=${(e) => setField(fi, { formula: e.target.value })} /></label>
+                    <span class="muted">names: ${t.fields.filter((x) => x !== f).map((x) => x.id).join(", ") || "—"}</span>`}
+                ${(f.type === "number" || f.type === "resource" || f.type === "computed") && html`<label class="row">unit <input style="width:70px" value=${f.unit} onInput=${(e) => setField(fi, { unit: e.target.value })} /></label>`}
+                ${f.type !== "computed" && html`<label class="row" title="Use this character frontmatter field as the value until a Stats entry sets one">prefill from <input class="mono" style="width:150px" list="char-fields" value=${f.source} placeholder="sheet field" onInput=${(e) => setField(fi, { source: e.target.value })} /></label>`}
+            </div>
+        </div>`)}</div>
+        <button class="small" onClick=${() => setT({ fields: [...t.fields, blankField()] })}>+ Field</button>
+        ${problems.length > 0 && html`<div class="warnbox" style="margin-top:10px">${problems.map((p) => html`<div>${p}</div>`)}</div>`}
+        <div class="grid2" style="margin-top:14px">
+            <details open=${!!t.panel}><summary><b>Custom panel layout</b> <span class="muted">(optional; the default is built from the sections)</span></summary>
+                <textarea class="mono" style="min-height:160px;margin-top:6px" value=${t.panel} onInput=${(e) => setT({ panel: e.target.value })}
+                    placeholder=${`[!${t.callout}] {{ownerName}}\n**Level:** {{stat.level}}\n{{#sections}}\n#### {{name}}\n{{#fields}}\n**{{label}}:** {{value}}\n{{/fields}}\n{{/sections}}`} />
+                <p class="muted" style="font-size:12px">Values: ${t.fields.map((f) => `{{stat.${f.id}}}`).join(" ") || "add fields first"}. Lists of links: ${"{{#list.<name>}}{{title}} {{description}}{{/list.<name>}}"}. Written without "> ".</p>
+            </details>
+            <div><div class="spread"><b>Preview</b>
+                <select value=${previewWith} onChange=${(e) => setPreviewOwner(e.target.value)}>${data.holders.map((h) => html`<option value=${h.name}>${h.name}</option>`)}</select></div>
+                ${preview?.error ? html`<p class="error">${preview.error}</p>` : preview?.panel ? html`<${CalloutRender} text=${preview.panel} />` : html`<p class="muted">${data.holders.length ? "…" : "No characters to preview with."}</p>`}
+            </div>
+        </div>`}
+    </div>`;
+}
+
+const NOVEL_TABS = [["plan", "Grand plan"], ["plots", "Plots"], ["people", "Characters & ledgers"], ["stats", "Stats"]];
 
 function NovelView({ folder }) {
     const { data: novel, error } = useApi(`/api/novel?${qs({ folder })}`);
@@ -1009,6 +1210,7 @@ function NovelView({ folder }) {
         <div class="tabs">${NOVEL_TABS.map(([k, label]) => html`<button class=${tab === k ? "on" : ""} onClick=${() => setTab(k)}>${label}</button>`)}</div>
         <div class="tab-body" key=${tab}>
             ${tab === "people" ? html`<${NovelPeople} folder=${folder} novel=${novel} />`
+                : tab === "stats" ? html`<${StatsTab} folder=${folder} novel=${novel} />`
                 : !plan ? html`<${Loading} />`
                 : tab === "plots" ? html`<${PlotBoard} folder=${folder} plan=${plan} />`
                 : html`<${GrandPlan} folder=${folder} plan=${plan} />`}
@@ -1234,6 +1436,7 @@ function OwnerView({ folder, owner, params }) {
             <label class="row muted"><input type="checkbox" style="width:auto" checked=${compare != null} onChange=${(e) => setCompare(e.target.checked ? Math.max(0, chapter - 1) : null)} /> compare with</label>
             ${compare != null && html`<input type="number" min="0" value=${compare} style="width:70px" onInput=${(e) => setCompare(Number(e.target.value))} />`}
         </div>
+        <${StatsPanel} folder=${folder} owner=${owner} at=${chapter} />
         <div class="tabs">
             ${data.ledgers.map((l) => html`<button class=${l === current ? "on" : ""} onClick=${() => setTab(l.type)}>${l.type} <span class="muted">${l.entries.length}</span></button>`)}
             ${missingTypes.length > 0 && html`<select onChange=${(e) => e.target.value && go(entryHref(folder, { owner, type: e.target.value }))} style="margin-left:8px"><option value="">+ start a ledger…</option>${missingTypes.map((t) => html`<option>${t}</option>`)}</select>`}
@@ -1250,6 +1453,52 @@ function OwnerView({ folder, owner, params }) {
             <h3>Entries</h3>
             ${[...current.entries].reverse().map((e) => html`<${EntryCard} e=${e} folder=${folder} behaviour=${behaviour} future=${e.chapter > chapter} />`)}
         `}
+    </div>`;
+}
+
+// ------------------------------------------------------------------ stats: panels on owner and note pages
+
+const originText = (o) => (!o ? "" : o.from === "ledger" ? `ch ${o.chapter}` : o.from === "source" ? `from ${o.field}` : "sheet");
+
+/** Stat values at a chapter as a table plus the stats panel callout */
+function StatsPanel({ folder, owner, at }) {
+    const { data, error } = useApi(`/api/stats?${qs({ novel: folder, owner, at })}`);
+    if (error || !data) return null;
+    if (!data.template) return html`<div class="panel muted">No stat template for ${owner}. Assign one on the novel's Stats tab${data.templates.length ? "" : " (create a template first)"}.</div>`;
+    const t = data.template;
+    return html`<div class="panel stats-panel">
+        <div class="spread"><h3 style="margin:0">${t.name} stats${data.chapter != null ? html` <span class="muted" style="font-weight:400">at chapter ${data.chapter}</span>` : ""}</h3>
+            <div class="row"><a class="button" href=${entryHref(folder, { owner, type: "Stats", chapter: data.chapter ?? "" })}>Change stats</a>
+                <button class="small" onClick=${() => copyText(data.panel, "Copied stats panel")}>⧉ Copy panel</button></div></div>
+        ${data.problems.length > 0 && html`<div class="warnbox">${data.problems.map((p) => html`<div>${p}</div>`)}</div>`}
+        <div class="grid2" style="margin-top:8px">
+            <table><tbody>${t.fields.map((f) => html`<tr><td class="muted">${f.section ? `${f.section} · ` : ""}${f.label}</td>
+                <td>${f.type === "link" || f.type === "links" ? html`<${Value} v=${data.values[f.key]} />` : data.display[f.key] || html`<span class="muted">—</span>`}</td>
+                <td class="muted" style="font-size:12px">${f.type === "computed" ? "computed" : originText(data.origin[f.key])}</td></tr>`)}</tbody></table>
+            <div><${CalloutRender} text=${data.panel} /></div>
+        </div>
+    </div>`;
+}
+
+/** Data store creature: its base stats in each novel, and adding it to another novel */
+function CreatureNovels({ page, index }) {
+    const [novel, setNovel] = useState("");
+    const [tpl, setTpl] = useState("");
+    const { data: ns } = useApi(novel ? `/api/stats/novel?${qs({ novel })}` : null);
+    const used = new Set(page.creatureStats.map((u) => u.novel));
+    const add = async () => {
+        try { const r = await api.send("POST", "/api/stats/creature", { novel, creature: toLink(page.name), template: tpl }); openInDrawer(noteHref(r.path)); }
+        catch (e) { toast(e.message); }
+    };
+    const names = ns ? Object.keys(ns.templates) : [];
+    return html`<div class="panel" data-drawer><h3>Stats in novels</h3>
+        ${page.creatureStats.length ? page.creatureStats.map((u) => html`<div><a href=${noteHref(u.path)}>${u.novelName}</a> <span class="muted">${u.template ?? "no template"}</span></div>`) : html`<p class="muted">Not used in any novel yet.</p>`}
+        <div class="row" style="margin-top:8px">
+            <select value=${novel} onChange=${(e) => { setNovel(e.target.value); setTpl(""); }}><option value="">Add to novel…</option>
+                ${(index?.novels ?? []).filter((n) => !used.has(n.folder)).map((n) => html`<option value=${n.folder}>${n.name}</option>`)}</select>
+            ${novel && html`<select value=${tpl} onChange=${(e) => setTpl(e.target.value)}><option value="">${names.length ? "Template…" : "No templates in this novel"}</option>${names.map((n) => html`<option>${n}</option>`)}</select>
+                <button class="primary small" disabled=${!tpl} onClick=${add}>Add</button>`}
+        </div>
     </div>`;
 }
 
@@ -1416,6 +1665,82 @@ function EntryFields({ type, entry, setEntry }) {
             <option value="">default (${type["default-callout"] ?? "default"})</option>${variants.map((v) => html`<option>${v}</option>`)}</select>`}`;
 }
 
+// ------------------------------------------------------------------ stats: inputs
+
+/** Comma separated list input that keeps what you type until you leave it */
+function ListInput({ value, onChange, placeholder = "comma separated" }) {
+    const [text, setText] = useState(asList(value).join(", "));
+    useEffect(() => { if (document.activeElement?.dataset?.listInput !== "1") setText(asList(value).join(", ")); }, [JSON.stringify(value)]);
+    return html`<input data-list-input="1" value=${text} placeholder=${placeholder} onInput=${(e) => { setText(e.target.value); onChange(fromText({ type: "list" }, e.target.value)); }}
+        onBlur=${() => setText(asList(value).join(", "))} />`;
+}
+
+/** Typed input for one stat field; values are typed (numbers, booleans, arrays of links...) */
+function StatInput({ field, value, onChange, index, template, values }) {
+    const f = field;
+    switch (f.type) {
+        case "number":
+            return html`<input type="number" step=${f.integer ? 1 : "any"} min=${f.min ?? undefined} max=${f.max ?? undefined} value=${value ?? ""}
+                onInput=${(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))} />`;
+        case "boolean":
+            return html`<select value=${value === true ? "yes" : value === false ? "no" : ""} onChange=${(e) => onChange(e.target.value === "" ? "" : e.target.value === "yes")}>
+                <option value="">—</option><option value="yes">Yes</option><option value="no">No</option></select>`;
+        case "choice":
+            return html`<select value=${value ?? ""} onChange=${(e) => onChange(e.target.value)}><option value="">—</option>
+                ${f.options.map((o) => html`<option value=${o}>${o}</option>`)}${value && !f.options.includes(value) && html`<option value=${value}>${value} (not an option)</option>`}</select>`;
+        case "list": return html`<${ListInput} value=${value} onChange=${onChange} />`;
+        case "link": case "links":
+            return html`<${LinkField} value=${f.type === "links" ? asList(value) : value || ""} multiple=${f.type === "links"} target=${f.collection || ""} index=${index} onChange=${onChange} />`;
+        case "longtext": return html`<${AutoTextarea} value=${value} onInput=${(e) => onChange(e.target.value)} style="font-family:inherit" />`;
+        case "resource": {
+            const r = parseResource(value) ?? { cur: "", max: null };
+            const fixedMax = f["max-field"] || f.max != null;
+            const set = (cur, max) => onChange(cur === "" ? "" : fixedMax || max === "" || max == null ? String(cur) : `${cur}/${max}`);
+            return html`<span class="resource-input">
+                <input type="number" aria-label=${`${f.label} current`} value=${r.cur} onInput=${(e) => set(e.target.value, r.max ?? "")} />
+                <span class="muted">/</span>
+                ${fixedMax ? html`<span class="muted" title=${f["max-field"] ? `Max from ${f["max-field"]}` : "Fixed max"}>${template && values ? displayValue(template, f, { ...values, [f.key]: String(r.cur || 0) }).split("/")[1] ?? "?" : f.max ?? "max"}</span>`
+                    : html`<input type="number" aria-label=${`${f.label} max`} value=${r.max ?? ""} placeholder="max" onInput=${(e) => set(r.cur, e.target.value)} />`}
+            </span>`;
+        }
+        case "computed": return html`<span class="muted" title=${f.formula}>${template && values ? displayValue(template, f, computeValues(template, values)) || "—" : "computed"}</span>`;
+        default: return html`<input value=${value ?? ""} onInput=${(e) => onChange(e.target.value)} />`;
+    }
+}
+
+const statError = (index, f, v) => checkValue(f, v, { resolve: (x) => { const n = index?.resolve(x); return n ? { path: n.path, collection: n.collection } : null; } });
+
+/**
+ * Stats entry lines as a form over the owner's template: every field starts at its previous value; only the
+ * fields you change become `set` lines. Lines for other fields stay in the generic editor below.
+ */
+function StatLinesEditor({ template, before, lines, setLines, index }) {
+    const lineFor = (f) => lines.find((l) => !l.with && namesField(f, l.set));
+    const valueOf = (f) => { const l = lineFor(f); return l ? fromText(f, l.value) : before[f.key]; };
+    const current = Object.fromEntries(template.fields.map((f) => [f.key, valueOf(f)]));
+    const setField = (f, v) => {
+        const rest = lines.filter((l) => l !== lineFor(f));
+        const same = JSON.stringify(v ?? "") === JSON.stringify(before[f.key] ?? "") || (Array.isArray(v) && !v.length && (before[f.key] == null || before[f.key] === ""));
+        setLines(same ? rest : [...rest, { set: f.key, value: toText(f, v) }]);
+    };
+    const sections = [...new Set(template.fields.map((f) => f.section))];
+    return html`<div class="stat-lines">
+        <div class="spread"><b>${template.name} <span class="muted" style="font-weight:400">stats</span></b>
+            <span class="muted">${lines.filter((l) => fieldNamed(template, l.set)).length} changed</span></div>
+        ${sections.map((s) => html`${s && html`<h4 class="stat-section">${s}</h4>`}
+            <div class="formgrid">${template.fields.filter((f) => f.section === s).map((f) => {
+                const changed = !!lineFor(f);
+                const err = f.type !== "computed" && statError(index, f, current[f.key]);
+                return html`<label class=${changed ? "changed" : ""} title=${f.key}>${f.label}</label>
+                    <div class="stat-cell">
+                        <${StatInput} field=${f} value=${current[f.key]} onChange=${(v) => setField(f, v)} index=${index} template=${template} values=${current} />
+                        <span class="muted stat-was">${f.type === "computed" ? "" : changed ? html`was ${displayValue(template, f, before) || "—"} <button class="small" onClick=${() => setField(f, before[f.key])}>undo</button>` : "unchanged"}</span>
+                        ${err && html`<div class="error">${err}</div>`}
+                    </div>`;
+            })}</div>`)}
+    </div>`;
+}
+
 function EntryEditor({ index, folder, params }) {
     const { data: novel } = useApi(`/api/novel?${qs({ folder })}`);
     const editKey = params.get("key");
@@ -1473,6 +1798,10 @@ function EntryEditor({ index, folder, params }) {
         setBusy(false);
     };
     const linkedType = linked && novel.ledgerTypes[linked.type];
+    const withTarget = typeName === "Relationships" || !!type?.["with-target"];
+    // a state ledger for an owner with a stat template edits as a form prefilled with the previous values
+    const statTemplate = type?.behaviour === "state" && !withTarget && preview?.stats?.template ? preview.stats.template : null;
+    const otherLines = statTemplate ? lines.filter((l) => !fieldNamed(statTemplate, l.set)) : [];
     return html`<div>
         <div class="muted"><a href=${novelHref(folder)}>${novel.name}</a></div>
         <h1>${editKey ? `Edit entry ${editKey}` : "New entry"}</h1>
@@ -1486,8 +1815,12 @@ function EntryEditor({ index, folder, params }) {
                     <${EntryFields} type=${type} entry=${entry} setEntry=${setEntry} />
                 </div></div>
                 ${type?.behaviour === "log" ? html`<div class="panel"><b>Text</b><textarea style="min-height:220px;font-family:inherit;font-size:14px" value=${entry.body} onInput=${(e) => setEntry({ ...entry, body: e.target.value })} /></div>`
+                : statTemplate ? html`<div class="panel"><${StatLinesEditor} template=${statTemplate} before=${preview.stats.before} lines=${lines} setLines=${setLines} index=${index} /></div>
+                    <details class="panel" open=${otherLines.length > 0}><summary class="muted">Other fields (not in the ${statTemplate.name} template)</summary>
+                        <div style="overflow-x:auto;margin-top:8px"><${LinesEditor} behaviour="state" lines=${otherLines} setLines=${(ls) => setLines([...lines.filter((l) => !otherLines.includes(l)), ...ls])} index=${index} novel=${novel} owner=${owner}
+                            createNotes=${createNotes} setCreateNotes=${setCreateNotes} withTarget=${false} /></div></details>`
                 : html`<div class="panel" style="overflow-x:auto"><${LinesEditor} behaviour=${type?.behaviour} lines=${lines} setLines=${setLines} index=${index} novel=${novel} owner=${owner}
-                    createNotes=${createNotes} setCreateNotes=${setCreateNotes} withTarget=${typeName === "Relationships" || type?.["with-target"]} /></div>`}
+                    createNotes=${createNotes} setCreateNotes=${setCreateNotes} withTarget=${withTarget} /></div>`}
                 ${!editKey && html`<div class="panel">
                     ${!linked ? html`<div class="row"><b>Linked entry</b><span class="muted">for another ledger of the same owner, e.g. a journal entry's reward</span>
                         <select onChange=${(e) => e.target.value && setLinked({ type: e.target.value, entry: { title: "", fields: {}, body: "" }, lines: novel.ledgerTypes[e.target.value].behaviour === "stock" ? [{ action: "add", item: "", qty: "1" }] : [] })}>
@@ -1511,6 +1844,8 @@ function EntryEditor({ index, folder, params }) {
                 </div>
                 ${preview?.warnings?.length > 0 && html`<div class="warnbox">${preview.warnings.map((w) => html`<div>${w.message}</div>`)}</div>`}
                 ${preview?.after && html`<div class="panel"><b>Held after this entry (chapter ${entry.chapter})</b>${holdingsTable(preview.after)}</div>`}
+                ${preview?.stats?.panel && html`<div class="panel"><div class="spread"><b>Stats panel after this entry</b><button class="small" onClick=${() => copyText(preview.stats.panel, "Copied stats panel")}>⧉ Copy</button></div>
+                    <${CalloutRender} text=${preview.stats.panel} /></div>`}
             </div>
         </div>
     </div>`;
@@ -1591,6 +1926,7 @@ function QAView() {
     return html`<div>
         <h1>Quality checks</h1>
         ${section("Ledger problems", data.ledgers, (x) => html`<tr><td><a href=${noteHref(x.ledger)}>${x.ledger.split("/").pop()}</a></td><td>${x.entry}</td><td>${x.message}</td></tr>`)}
+        ${section("Stat problems", data.stats ?? [], (x) => html`<tr><td><a href=${noteHref(x.path)}>${x.name}</a></td><td class="muted">${x.novel}</td><td>${x.message}</td></tr>`)}
         ${section("Misc items (no data note)", [...misc.values()], (m) => html`<tr><td>${m.item}</td><td class="muted">${m.novel} · ${m.count} line${m.count > 1 ? "s" : ""}</td><td><button class="small" onClick=${() => promote(m)}>Create entry & relink</button></td></tr>`)}
         ${section("Unresolved links", data.unresolved, (x) => html`<tr><td><a href=${noteHref(x.path)}>${x.path.split("/").pop()}</a></td><td>${x.field}</td><td>${x.value}</td></tr>`)}
         ${section("Name collisions", data.collisions, (x) => html`<tr><td>${x.name}</td><td>${x.paths.map((p) => html`<div><a href=${noteHref(p)}>${p}</a></div>`)}</td></tr>`)}

@@ -82,6 +82,17 @@ Field specs are in the Data Store Schema under `plans` (defaults in `lib/plans.j
 - `Plots.md` (callout list) is the legacy plot list; the `Plots/` notes replace it and Templater `createNovel` no longer creates it.
 - `scripts/migrate-plans.js` (run 2026-10-21 on the real vault, idempotent; `npm test` runs it on the copy) did the restructure: `arc-name` -> `number`, file renames, `plot` filled from bodies, Plan.base views, schema `plans` section.
 
+## Stats
+
+Per-novel **stat templates** in `config.md` frontmatter `stat-templates: {<Name>: {description, default, callout, show-empty, panel, fields: [...]}}`. Field: `key` (frontmatter key on the sheet, default `stats/<label>`), `label`, `type` (number, text, longtext, list, boolean, choice, link, links, resource, computed), `section`, and per type `integer`/`min`/`max`, `options`, `collection` + `describe`, `max-field` (resource), `formula` (computed), `unit`, `source` (character frontmatter field that prefills the value). Rules, checks, formulas and the default panel layout are in `public/stats-core.js` (shared with the server); vault side in `lib/stats.js`.
+
+- **Holders**: character sheets (`stat-template: <Name>`, else the template marked `default`) and per-novel creature stat notes `<novel>/Creatures/<Creature> (<Novel>).md` (`type: creature-stats`, `creature: "[[Goblin]]"`, `stat-template`, values as frontmatter; base stats, no ledger). `creatures-folder` in config.md overrides the folder.
+- **Values at chapter N** (`stats.valuesAt`): a field any state-ledger line ever sets comes from the ledger (empty before its first entry); otherwise the sheet value, then the `source` field. Ledger lines may name a field by key, last key segment, formula name or label (`fieldNamed`). Computed fields are evaluated on read and written to sheets by sync.
+- **Checks**: PATCH /api/note (`checkPatch`) and Stats ledger saves (`checkLines`) reject values that break the template (400); the preview returns them as warnings. QA lists current problems.
+- **Formulas**: numbers, field names (`fieldId` = last key segment with non-alphanumerics as `_`, or `{key}`), `+ - * / ^ ( )`, `min max floor ceil round abs sqrt`. Lists count items, yes/no is 1/0, resources use the current value. No `eval`.
+- **Panels**: `[!<callout>] <owner>` with unsectioned fields, then `#### Section` blocks; described links as `##### Title` + description. A template's `panel` (mustache, without `> `) overrides it: `{{ownerName}} {{chapter}} {{stat.<id>}} {{#sections}}{{name}}{{#fields}}{{label}} {{value}}{{/fields}}{{/sections}} {{#list.<id>}}{{title}} {{description}}{{/list.<id>}}`.
+- **UI**: novel page Stats tab (template editor with live panel preview, template per character, add creatures), owner page stats panel at the slider's chapter with Copy, typed stat block on sheets and creature notes (ledger-managed fields read-only), Stats entries as a form prefilled with the previous values where only changed fields become lines, "Stats in novels" on data store creatures.
+
 ## Ledgers
 
 One file per owner per ledger type: `<novel>/Ledgers/<Owner> - <Type>.md`. Owners are any note (characters, but also e.g. a train). Frontmatter: `type: ledger`, `ledger-type`, `owner: "[[…]]"`, `novel: "[[…]]"`.
@@ -130,6 +141,8 @@ lib/novels.js        novels, chapters, characters, ledger types merge, compute, 
 lib/ledger.js        ledger parse/serialise, foldStock / diffStock / foldState, qty formatting
 lib/template.js      mustache subset + callout prefixing
 lib/render.js        markdown -> HTML (marked) with wikilinks, image embeds, callouts, inline fields, %% comments
+lib/stats.js         stat templates, holders, values at a chapter, checks, sheet sync hook, panels, creature stat notes
+public/stats-core.js field types, checks, text<->value, formulas, panel layout (served at /stats-core.js)
 lib/plans.js         volumes, chapter plans, plots: overview, create, saveChapterPlan, syncVolumes, describe(note)
 public/outline.js    plan outline parse/serialise (served at /outline.js, imported by the server too)
 public/              index.html (import map), app.js (all views, Preact + htm), style.css (light/dark), fonts/ (Newsreader)
@@ -165,6 +178,11 @@ POST /api/promote-misc {novel, item, collection, fm}  create a data note and rel
 GET  /api/plan?novel=                   volumes, plots (with rating), merged chapters (notes + plans), ratings, specs
 POST /api/plan/chapter {novel, n, set:{plan,title}, baseMtime}   create or update a chapter plan
 POST /api/plan/volume {novel, title, fm}   POST /api/plan/plot {novel, title, fm}
+GET  /api/stats?novel=&owner=&at=        template, values, origin, display, problems, panel
+POST /api/stats/view {novel, owner, at, template}   same, with an unsaved template (editor preview)
+GET  /api/stats/novel?novel=             templates, holders, configMtime
+POST /api/stats/templates {novel, templates:[...], renames:{old:new}, baseMtime}
+POST /api/stats/creature {novel, creature, template}
 GET  /api/events                         SSE {version, paths} on every vault change
 ```
 

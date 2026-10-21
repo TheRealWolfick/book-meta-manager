@@ -10,6 +10,8 @@ import { Novels } from "./lib/novels.js";
 import { Blueprints } from "./lib/blueprints.js";
 import { DataStore } from "./lib/datastore.js";
 import { Plans } from "./lib/plans.js";
+import { Stats } from "./lib/stats.js";
+import { fromText, fieldNamed } from "./public/stats-core.js";
 import { patchNote } from "./lib/write.js";
 import { renderMarkdown } from "./lib/render.js";
 import { asCallout, renderTemplate } from "./lib/template.js";
@@ -26,12 +28,15 @@ const novels = new Novels(vault);
 const blueprints = new Blueprints(vault);
 const store = new DataStore(vault, novels, blueprints);
 const plans = new Plans(vault, novels, store);
+const stats = new Stats(vault, novels, store);
+novels.sheetHook = (novel, owner, set) => stats.sheetValues(novel, owner, set);
 
 const STATIC = {
     "/": ["public/index.html", "text/html"],
     "/app.js": ["public/app.js", "text/javascript"],
     "/style.css": ["public/style.css", "text/css"],
     "/outline.js": ["public/outline.js", "text/javascript"],
+    "/stats-core.js": ["public/stats-core.js", "text/javascript"],
     "/fonts/newsreader-latin.woff2": ["public/fonts/newsreader-latin.woff2", "font/woff2"],
     "/vendor/preact.mjs": ["node_modules/preact/dist/preact.mjs", "text/javascript"],
     "/vendor/hooks.mjs": ["node_modules/preact/hooks/dist/hooks.mjs", "text/javascript"],
@@ -78,10 +83,11 @@ const routes = {
     "GET /api/index": () => store.index(),
     "GET /api/note": ({ q }) => {
         const p = need(q.get("path"), "path");
-        return { ...found(store.page(p), "Note"), plan: plans.describe(p) };
+        const page = found(store.page(p), "Note");
+        return { ...page, plan: plans.describe(p), stats: stats.describeNote(p), creatureStats: page.collection === "Creatures" ? stats.creatureUses(p) : undefined };
     },
     "GET /api/blueprint": ({ q }) => blueprints.tree(need(q.get("item"), "item"), Number(q.get("count") ?? 1)),
-    "GET /api/qa": () => store.qa(),
+    "GET /api/qa": () => ({ ...store.qa(), stats: stats.qa() }),
     "POST /api/render": async ({ req }) => ({ html: renderMarkdown((await json(req)).markdown ?? "", vault) }),
 
     "POST /api/note": async ({ req }) => {
@@ -92,6 +98,8 @@ const routes = {
         const b = await json(req);
         const p = need(b.path, "path");
         if (!vault.notes.has(p)) throw fail(404, "Note not found");
+        const problems = stats.checkPatch(p, b.set ?? {});
+        if (problems.length) throw fail(400, problems.join("\n"));
         const n = await patchNote(vault, p, { set: b.set ?? {}, unset: b.unset ?? [], body: b.body, baseMtime: b.baseMtime });
         await plans.afterPatch(p);
         return { path: p, mtime: vault.notes.get(p)?.mtime ?? n.mtime };
@@ -163,6 +171,8 @@ const routes = {
             const final = path.posix.basename(rel, ".md");
             for (const l of b.entry.lines ?? []) if (l.item === `[[${c.name}]]` || l.item === c.name) l.item = `[[${final}]]`;
         }
+        const problems = stats.checkLines(novel, b.owner, b.type, b.entry?.lines);
+        if (problems.length) throw fail(400, problems.join("\n"));
         const r = await novels.saveEntry(novel, { owner: need(b.owner, "owner"), type: need(b.type, "type"), entry: b.entry, replaceKey: b.replaceKey, baseMtime: b.baseMtime, linked: b.linked ?? [] });
         const receivers = (b.entry.lines ?? []).filter((l) => l.action === "transfer-out" && l.to).map((l) => l.to.replace(/^\[\[|\]\]$/g, ""));
         const synced = [];
@@ -187,6 +197,18 @@ const routes = {
             const after = foldStock(vault, [...others, draft], { until: chapter });
             out.after = after.stacks;
             out.warnings = foldStock(vault, [...others, draft]).warnings.filter((w) => !foldStock(vault, others).warnings.some((x) => x.message === w.message));
+        }
+        if (type.behaviour === "state") {
+            out.warnings = stats.checkLines(novel, b.owner, b.type, draft.lines).map((message) => ({ message }));
+            // previous values at this chapter (for prefilling) and the stats panel with this entry applied
+            const holder = stats.holder(novel, b.owner);
+            const template = holder && stats.templates(novel)[holder.template];
+            if (template) {
+                const before = stats.valuesAt(novel, holder, template, chapter - 1e-9);
+                const after = { ...before.values };
+                for (const l of draft.lines) { const f = !l.with && fieldNamed(template, l.set); if (f) after[f.key] = fromText(f, l.value); }
+                out.stats = { template, before: before.values, panel: stats.panel(novel, holder, template, after, chapter) };
+            }
         }
         return out;
     },
@@ -215,6 +237,24 @@ const routes = {
     "POST /api/plan/plot": async ({ req }) => {
         const b = await json(req);
         return { path: await plans.createPlot(getNovel(b.novel), need(b.title, "title"), b.fm ?? {}) };
+    },
+    // ---- stats
+    "GET /api/stats": ({ q }) => stats.view(getNovel(q.get("novel")), need(q.get("owner"), "owner"), { at: q.get("at") ? Number(q.get("at")) : undefined }),
+    "POST /api/stats/view": async ({ req }) => {
+        const b = await json(req);
+        return stats.view(getNovel(b.novel), need(b.owner, "owner"), { at: b.at ?? undefined, template: b.template });
+    },
+    "GET /api/stats/novel": ({ q }) => {
+        const novel = getNovel(q.get("novel"));
+        return { templates: stats.templates(novel), holders: stats.holders(novel), configMtime: vault.notes.get(novel.configPath)?.mtime ?? null, creaturesFolder: stats.creaturesFolder(novel) };
+    },
+    "POST /api/stats/templates": async ({ req }) => {
+        const b = await json(req);
+        return stats.saveTemplates(getNovel(b.novel), b.templates ?? [], { baseMtime: b.baseMtime, renames: b.renames ?? {} });
+    },
+    "POST /api/stats/creature": async ({ req }) => {
+        const b = await json(req);
+        return { path: await stats.createCreature(getNovel(b.novel), need(b.creature, "creature"), need(b.template, "template")) };
     },
     "POST /api/character": async ({ req }) => {
         const b = await json(req);

@@ -264,6 +264,23 @@ textarea.prose { font-family: inherit; font-size: 14.5px; line-height: 1.75; min
 .novel-colour input[type=color] { width: 34px; height: 28px; padding: 2px; cursor: pointer; }
 .sidebar a.active, a, button.primary, .chip.on { transition: color .25s, background-color .25s, border-color .25s; }
 
+/* stats */
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.stat-section { margin: 14px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.stat-cell { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.stat-cell > input, .stat-cell > select, .stat-cell > .picker, .stat-cell > div:not(.error) { flex: 1 1 200px; }
+.stat-was { font-size: 12px; }
+.resource-input { display: inline-flex; gap: 6px; align-items: center; }
+.resource-input input { width: 90px; }
+.sheet-stats { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.templates-editor h2 { font-size: 18px; }
+.field-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.field-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel); }
+.field-main { display: grid; grid-template-columns: minmax(120px, 1.2fr) 140px minmax(110px, 1fr) minmax(130px, 1fr) auto; gap: 6px; align-items: center; }
+.field-opts { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-top: 6px; font-size: 13px; color: var(--muted); }
+.field-opts:empty { display: none; }
+@media (max-width: 860px) { .field-main { grid-template-columns: 1fr 1fr; } }
+
 /* page and sort transitions */
 .view { animation: fade-in .2s ease-out; }
 th { transition: color .15s; }
