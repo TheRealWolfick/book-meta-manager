@@ -1,0 +1,21 @@
+{
+  "name": "books-meta-viewer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local web browser and editor for the 80. Global Data Store and novel ledgers",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "sh test/run.sh"
+  },
+  "dependencies": {
+    "htm": "3.1.1",
+    "marked": "18.1.1",
+    "preact": "11.0.1",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}
