@@ -14,7 +14,8 @@ Default path `~/Documents/Obsidian/books` (override with `--vault` or `BOOKS_VAU
   Chapters/            chapter notes; number from frontmatter `chapter` or leading digits of the file name
   Characters/          character sheets, flat: <Name>.md
   Ledgers/             <Owner> - <Ledger Type>.md
-  Plan/, Plots/, Supporting Docs/, *.base
+  Plan/Book Plan/       volumes (grand plan), Plan/Chapter Plans/  chapter plans, Plots/  graded plot ideas (see Plans)
+  Supporting Docs/, *.base
 80. Global Data Store/ shared data (flat collection folders, see below)
   _Attachments/<Collection>/   uploaded images
 90. Templater/
@@ -53,6 +54,9 @@ draft-chapter-from: 900     # optional; chapters >= this are drafts (e.g. 999.md
 characters-folder: Characters   # optional overrides
 chapters-folder: Chapters
 ledgers-folder: Ledgers
+volumes-folder: Plan/Book Plan          # plan folders, relative to the novel
+chapter-plans-folder: Plan/Chapter Plans
+plots-folder: Plots
 ledger-types:               # optional: add types or override parts of shared ones
   Journal:
     default-callout: maven
@@ -64,6 +68,17 @@ ledger-types:               # optional: add types or override parts of shared on
 ```
 
 Novel-specific settings for this app go in this frontmatter (user's instruction).
+
+## Plans
+
+Field specs are in the Data Store Schema under `plans` (defaults in `lib/plans.js PLAN_DEFAULTS`). Link targets starting with `@` (`@plots`, `@characters`) are folders of the novel itself. **All plan text is frontmatter** (`plan`, `plot`) because the user reviews plans in Bases (`Plan.base`); bodies of plan notes are never read or written by the app (older notes may still hold a copy).
+
+- **Volume** (`Plan/Book Plan/<Title>.md`, unique as `Title (Volume)`): `type: volume`, `title`, `number` (order), `plot` (main plot link), `subplots`, `chapter-start`, `chapter-end`, `description`, `plan`. Chapter ranges decide which chapters are in a volume.
+- **Chapter plan** (`Plan/Chapter Plans/Plan 014 (<Novel>).md`): `type: chapter-plan`, `chapter`, `title` (working title until a chapter note exists), `volume`, `plan`. `volume` is generated text `"<number> - <title>"` (kept as text so Bases can group/sort); `plans.syncVolumes` rewrites it after any volume or chapter plan save.
+- **Plot** (`Plots/<Title>.md`): `type: plot`, `title`, `rating` (link to `Taxonomy/Rating`, ranked by `class`), `characters`, `mood`, `soundtrack`, `images`, `plot` (the text).
+- **Outline format** (`public/outline.js`, shared by browser and server): markdown bullets indented with tabs, blank line before each top-level event. `parseOutline` also reads unbulleted or space-indented text; levels can't skip a step. Saves go through `normalizeOutline`.
+- `Plots.md` (callout list) is the legacy plot list; the `Plots/` notes replace it and Templater `createNovel` no longer creates it.
+- `scripts/migrate-plans.js` (run 2026-10-21 on the real vault, idempotent; `npm test` runs it on the copy) did the restructure: `arc-name` -> `number`, file renames, `plot` filled from bodies, Plan.base views, schema `plans` section.
 
 ## Ledgers
 
@@ -113,7 +128,10 @@ lib/novels.js        novels, chapters, characters, ledger types merge, compute, 
 lib/ledger.js        ledger parse/serialise, foldStock / diffStock / foldState, qty formatting
 lib/template.js      mustache subset + callout prefixing
 lib/render.js        markdown -> HTML (marked) with wikilinks, image embeds, callouts, inline fields, %% comments
+lib/plans.js         volumes, chapter plans, plots: overview, create, saveChapterPlan, syncVolumes, describe(note)
+public/outline.js    plan outline parse/serialise (served at /outline.js, imported by the server too)
 public/              index.html (import map), app.js (all views, Preact + htm), style.css (light/dark)
+scripts/migrate-plans.js             plan restructure, already run 2026-10-21 (see Plans)
 test/run.sh, test/ui-smoke.mjs       npm test: vault copy + jsdom route render + create-entry flow
 ```
 
@@ -142,6 +160,9 @@ DELETE /api/ledger/entry?ledger=&key=
 POST /api/character {novel, name, fm}
 POST /api/sync-sheets?novel=
 POST /api/promote-misc {novel, item, collection, fm}  create a data note and relink matching misc lines
+GET  /api/plan?novel=                   volumes, plots (with rating), merged chapters (notes + plans), ratings, specs
+POST /api/plan/chapter {novel, n, set:{plan,title}, baseMtime}   create or update a chapter plan
+POST /api/plan/volume {novel, title, fm}   POST /api/plan/plot {novel, title, fm}
 GET  /api/events                         SSE {version, paths} on every vault change
 ```
 
@@ -155,6 +176,8 @@ Non-GET requests must send `x-requested-with: books-meta-viewer` (blocks cross-s
 - Side drawer: a click on a `#/note/` link inside any `[data-drawer]` element (collection tables and cards, the drawer itself) opens it in the right-hand drawer instead of navigating. `data-page` opts a link out; ctrl/cmd-click still navigates. The drawer keeps a back/forward stack; back on the first page, clicking the backdrop, Escape or any route change closes it. Unsaved edits ask before being discarded (`markDirty`/`confirmDiscard`, scoped "page" or "drawer").
 - Collection view: facet values that would leave no rows are greyed out (counts ignore the facet's own selection, values within a facet are OR-ed). A "Group by" bar (a one-row table, a button above each column; fields without a column go in the last cell) splits the rows into one table per group (click again to ungroup); list values put a row in every matching group; ranked taxonomies sort by `class`. Group choice is stored per collection in localStorage.
 - `ColumnTables`: all group tables share one `<colgroup>` of widths (`table-layout: fixed`), measured from the first table's natural layout. Drag a header's right edge to resize (double-click resets), hold a header to collapse the column to a thin bordered strip (click or hold to restore). Resized widths (`colWidths:<collection>`) and hidden columns (`colHidden:<collection>`) are saved in localStorage; the last column fills the rest. One `.coltables` container scrolls all tables horizontally together.
+- Novel page tabs: Grand plan (volumes with their plots and chapter rows, "Plan chapter N"), Plots (cards grouped by grade, grade select saves `rating`), Characters & ledgers. Chapter links open `ChapterView` in the drawer: `ChapterPlan` (outline editor + Save changes, posts to /api/plan/chapter) above the ledger entries. The drawer stack holds hrefs (`#/note/…`, `#/chapter/…`).
+- `PlanEditor`: one auto-growing textarea per outline item, level = indent; Enter continues at the same level (on an empty sub item it outdents), Tab/Shift+Tab move the item and its sub events, Backspace at the start outdents or joins, Alt+↑/↓ moves, multi-line paste splits. Any frontmatter key `plan` uses it; `plot` uses a prose textarea.
 - Animations: CSS keyframes for the drawer and page changes, `useFlip()` (Web Animations API) for rows moving on filter/sort/group changes. All honour `prefers-reduced-motion`.
 
 ## Working on this project
@@ -162,6 +185,7 @@ Non-GET requests must send `x-requested-with: books-meta-viewer` (blocks cross-s
 - **Never write to the real vault while testing.** `npm test` copies it to a temp dir. For manual API tests, copy the vault the same way (`tar --exclude=./.git --exclude=./.obsidian`) and run `node server.js --vault <copy> --port 4398`.
 - Don't kill servers with `pkill -f` patterns that also match your own shell command line. Track PIDs.
 - Write all frontmatter through `patchNote`/`createNote` (yaml Document, `nullStr: ""`). Never regenerate a whole note's frontmatter from a parsed object, which would drop formatting and unknown keys.
+- Frontmatter is parsed as written; only YAML that fails because of tab indentation is retried with tabs as spaces (`parseYamlLenient`). Tabs inside block text (plan outlines) must survive.
 - Keep the vault conventions above in sync with the Templater scripts in `90. Templater/Scripts` (`dataStore.js`, `applySchema.js`, `dataStoreMaintenance.js`, `createNovel.js`, `createItem.js`, `createBlueprint.js`, `craftItem.js`, `dismantleItem.js`). Templater's `createNovel` creates `Characters/`, `Ledgers/` and copies bases from `90. Templater/Templates/Novel Scaffold/`.
 - Code style: ES modules, 4-space indent, double quotes, small focused comments, no framework on the server.
 

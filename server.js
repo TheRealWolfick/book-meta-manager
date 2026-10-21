@@ -9,6 +9,7 @@ import { Vault } from "./lib/vault.js";
 import { Novels } from "./lib/novels.js";
 import { Blueprints } from "./lib/blueprints.js";
 import { DataStore } from "./lib/datastore.js";
+import { Plans } from "./lib/plans.js";
 import { patchNote } from "./lib/write.js";
 import { renderMarkdown } from "./lib/render.js";
 import { asCallout, renderTemplate } from "./lib/template.js";
@@ -24,11 +25,13 @@ const vault = new Vault(VAULT);
 const novels = new Novels(vault);
 const blueprints = new Blueprints(vault);
 const store = new DataStore(vault, novels, blueprints);
+const plans = new Plans(vault, novels, store);
 
 const STATIC = {
     "/": ["public/index.html", "text/html"],
     "/app.js": ["public/app.js", "text/javascript"],
     "/style.css": ["public/style.css", "text/css"],
+    "/outline.js": ["public/outline.js", "text/javascript"],
     "/vendor/preact.mjs": ["node_modules/preact/dist/preact.mjs", "text/javascript"],
     "/vendor/hooks.mjs": ["node_modules/preact/hooks/dist/hooks.mjs", "text/javascript"],
     "/vendor/htm.mjs": ["node_modules/htm/dist/htm.module.js", "text/javascript"],
@@ -72,7 +75,10 @@ function entryOut(novel, ledger, e, placed) {
 
 const routes = {
     "GET /api/index": () => store.index(),
-    "GET /api/note": ({ q }) => found(store.page(need(q.get("path"), "path")), "Note"),
+    "GET /api/note": ({ q }) => {
+        const p = need(q.get("path"), "path");
+        return { ...found(store.page(p), "Note"), plan: plans.describe(p) };
+    },
     "GET /api/blueprint": ({ q }) => blueprints.tree(need(q.get("item"), "item"), Number(q.get("count") ?? 1)),
     "GET /api/qa": () => store.qa(),
     "POST /api/render": async ({ req }) => ({ html: renderMarkdown((await json(req)).markdown ?? "", vault) }),
@@ -86,7 +92,8 @@ const routes = {
         const p = need(b.path, "path");
         if (!vault.notes.has(p)) throw fail(404, "Note not found");
         const n = await patchNote(vault, p, { set: b.set ?? {}, unset: b.unset ?? [], body: b.body, baseMtime: b.baseMtime });
-        return { path: p, mtime: n.mtime };
+        await plans.afterPatch(p);
+        return { path: p, mtime: vault.notes.get(p)?.mtime ?? n.mtime };
     },
     "POST /api/images": async ({ req, q }) => store.attachImage(need(q.get("path"), "path"), need(q.get("filename"), "filename"), await readBody(req)),
 
@@ -129,7 +136,16 @@ const routes = {
         for (const l of novels.ledgers(novel)) for (const e of l.entries) if (e.chapter === n) entries.push(entryOut(novel, l, e, placed));
         entries.sort((a, b) => a.seq - b.seq);
         const chapter = novels.chapters(novel).find((c) => c.number === n) ?? null;
-        return { chapter, n, entries, copyAll: entries.map((e) => e.callout).join("\n\n") };
+        const planNote = plans.chapterPlans(novel).get(n);
+        const volumes = plans.volumes(novel);
+        const volume = plans.volumeOf(volumes, n);
+        const nums = plans.chapters(novel).map((c) => c.number);
+        return {
+            chapter, n, entries, copyAll: entries.map((e) => e.callout).join("\n\n"),
+            plan: planNote ? { path: planNote.path, fm: planNote.fm, mtime: planNote.mtime } : null,
+            volume: volume ? { path: volume.path, title: volume.title, label: plans.volumeLabel(volume) } : null,
+            prev: nums.filter((x) => x < n).at(-1) ?? null, next: nums.find((x) => x > n) ?? null,
+        };
     },
     "GET /api/callout": ({ q }) => {
         const ledger = ledgerAt(q.get("ledger"));
@@ -179,6 +195,25 @@ const routes = {
         await novels.deleteEntry(novel, ledger.path, need(q.get("key"), "key"), q.get("baseMtime"));
         await novels.syncSheet(novel, ledger.owner);
         return { ok: true };
+    },
+    // ---- planning
+    "GET /api/plan": ({ q }) => plans.overview(getNovel(q.get("novel"))),
+    "POST /api/plan/chapter": async ({ req }) => {
+        const b = await json(req);
+        const n = Number(need(b.n, "chapter"));
+        if (!Number.isInteger(n) || n < 0) throw fail(400, "Chapter must be a whole number");
+        return plans.saveChapterPlan(getNovel(b.novel), n, { set: b.set ?? {}, baseMtime: b.baseMtime });
+    },
+    "POST /api/plan/volume": async ({ req }) => {
+        const b = await json(req);
+        const novel = getNovel(b.novel);
+        const path = await plans.createVolume(novel, need(b.title, "title"), b.fm ?? {});
+        await plans.syncVolumes(novel);
+        return { path };
+    },
+    "POST /api/plan/plot": async ({ req }) => {
+        const b = await json(req);
+        return { path: await plans.createPlot(getNovel(b.novel), need(b.title, "title"), b.fm ?? {}) };
     },
     "POST /api/character": async ({ req }) => {
         const b = await json(req);

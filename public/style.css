@@ -176,6 +176,61 @@ section.group:first-of-type > h2 { margin-top: 4px; }
 .drawer .grid2 { grid-template-columns: 1fr; }
 .drawer .formgrid { grid-template-columns: 130px 1fr; }
 
+/* links styled as buttons (chapter navigation works in the drawer too) */
+a.button { display: inline-block; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; color: var(--text); white-space: nowrap; }
+a.button:hover { border-color: var(--accent); text-decoration: none; }
+textarea.auto { resize: none; overflow: hidden; min-height: 0; }
+textarea.prose { font-family: inherit; font-size: 14.5px; line-height: 1.75; min-height: 120px; }
+
+/* plan outlines: one item per line, indent = event level, more space between main events */
+.plan-editor { --indent: 26px; padding: 2px 0; }
+.plan-row { display: flex; align-items: flex-start; gap: 8px; padding-left: calc(var(--level) * var(--indent)); position: relative; }
+.plan-row.top { margin-top: 14px; }
+.plan-row textarea { flex: 1; border: 1px solid transparent; background: transparent; resize: none; overflow: hidden; min-height: 0;
+    font: inherit; font-size: 14.5px; line-height: 1.85; padding: 1px 6px; border-radius: 5px; transition: background-color .15s, border-color .15s; }
+.plan-row textarea:hover { background: var(--panel-2); }
+.plan-row textarea:focus { outline: none; background: var(--panel); border-color: var(--accent); }
+.plan-row.lvl-0 textarea { font-weight: 600; }
+.plan-bullet { flex: none; width: 7px; height: 7px; margin-top: 13px; border-radius: 50%; background: var(--accent); }
+.plan-row.lvl-1 .plan-bullet { background: transparent; border: 1.5px solid var(--accent); }
+.plan-row.lvl-2 .plan-bullet, .plan-row.lvl-3 .plan-bullet { border-radius: 1px; width: 6px; height: 6px; background: var(--muted); }
+.plan-row:not(.lvl-0)::before { content: ""; position: absolute; top: 0; bottom: 0; left: calc((var(--level) - 1) * var(--indent) + 3px); border-left: 1px solid var(--line); }
+.plan-hint { font-size: 11.5px; margin-top: 8px; }
+.plan { line-height: 1.85; font-size: 14.5px; }
+.plan ul { margin: 0; padding-left: 22px; }
+.plan > ul { padding-left: 18px; }
+.plan .depth-0 > li { margin-top: .85em; font-weight: 600; }
+.plan .depth-0 > li:first-child { margin-top: 0; }
+.plan .depth-0 > li > ul { font-weight: 400; }
+.plan .depth-1 { list-style: circle; } .plan .depth-2, .plan .depth-3 { list-style: square; color: var(--muted); }
+.plan.compact { font-size: 13px; line-height: 1.6; color: var(--muted); margin-top: 4px; }
+.plan.compact .depth-0 > li { margin-top: .2em; font-weight: 400; }
+.plan-more { font-size: 12px; margin-left: 18px; }
+
+/* grand plan */
+.tab-body { animation: fade-in .2s ease-out; }
+.volume h2 { margin: 0; font-size: 17px; }
+.volume-plots { margin: 8px 0; }
+.plot-chip.main { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.volume-outline { margin: 8px 0 12px; }
+.volume-outline summary { cursor: pointer; color: var(--muted); margin-bottom: 6px; }
+.chapter-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.chapter-row { display: block; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); color: var(--text); background: var(--panel); transition: border-color .15s, background-color .15s; }
+.chapter-row:hover { border-color: var(--accent); text-decoration: none; background: var(--panel-2); }
+.chapter-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.add-chapter { display: inline-block; margin-top: 8px; font-size: 13px; }
+.chapter-plan h2 { font-size: 16px; }
+
+/* plots by grade */
+.plot-grade > h2 { margin: 18px 0 8px; }
+.plot-grade:first-of-type > h2 { margin-top: 0; }
+.plot-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.plot-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; transition: border-color .15s; }
+.plot-card:hover { border-color: var(--accent); }
+.plot-title { font-weight: 600; font-size: 15px; }
+.plot-card select { font-size: 12px; padding: 2px 6px; }
+.plot-text { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
+
 /* page and sort transitions */
 .view { animation: fade-in .2s ease-out; }
 th { transition: color .15s; }

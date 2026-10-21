@@ -2,6 +2,7 @@
 import { h, render } from "preact";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
 import htm from "htm";
+import { parseOutline, serializeOutline } from "./outline.js";
 
 const html = htm.bind(h);
 
@@ -103,9 +104,9 @@ const hasDirty = (scope) => [...dirtyForms.keys()].some((k) => k.startsWith(`${s
 const confirmDiscard = (scope) => !hasDirty(scope) || confirm("Discard unsaved changes?");
 addEventListener("beforeunload", (e) => { if (dirtyForms.size) e.preventDefault(); });
 
-// ------------------------------------------------------------------ side drawer (note links in tables and inside the drawer)
+// ------------------------------------------------------------------ side drawer (note and chapter links in tables and inside the drawer)
 
-// stack of note paths with a cursor, like browser history; closing animates before the stack clears
+// stack of hrefs (#/note/… or #/chapter/…) with a cursor, like browser history; closing animates before the stack clears
 let drawer = { stack: [], pos: -1, closing: false };
 const drawerListeners = new Set();
 const setDrawer = (d) => { drawer = d; drawerListeners.forEach((f) => f(d)); };
@@ -122,12 +123,12 @@ function closeDrawer({ force } = {}) {
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => setDrawer({ stack: [], pos: -1, closing: false }), reducedMotion() ? 0 : DRAWER_MS);
 }
-function openInDrawer(path) {
-    if (drawer.stack[drawer.pos] === path && !drawer.closing) return;
+function openInDrawer(href) {
+    if (drawer.stack[drawer.pos] === href && !drawer.closing) return;
     if (!confirmDiscard("drawer")) return;
     clearTimeout(closeTimer);
     const live = drawer.closing ? [] : drawer.stack.slice(0, drawer.pos + 1);
-    setDrawer({ stack: [...live, path], pos: live.length, closing: false });
+    setDrawer({ stack: [...live, href], pos: live.length, closing: false });
 }
 function drawerBack() {
     if (drawer.pos <= 0) return closeDrawer();
@@ -136,19 +137,20 @@ function drawerBack() {
 function drawerForward() {
     if (drawer.pos < drawer.stack.length - 1 && confirmDiscard("drawer")) setDrawer({ ...drawer, pos: drawer.pos + 1 });
 }
-// Note links inside a [data-drawer] container open in the drawer; [data-page] links and modified clicks don't
+// Note and chapter links inside a [data-drawer] container open in the drawer; [data-page] links and modified clicks don't
 document.addEventListener("click", (e) => {
-    const a = e.target.closest?.('a[href^="#/note/"]');
+    const a = e.target.closest?.('a[href^="#/note/"], a[href^="#/chapter/"]');
     if (!a || e.defaultPrevented || e.button || e.ctrlKey || e.metaKey || e.shiftKey || a.hasAttribute("data-page") || !a.closest("[data-drawer]")) return;
     e.preventDefault();
-    openInDrawer(decodeURIComponent(a.getAttribute("href").slice("#/note/".length)));
+    openInDrawer(a.getAttribute("href"));
 });
 addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer.pos >= 0 && !document.querySelector(".lightbox")) closeDrawer(); });
 
 function Drawer({ index }) {
     const d = useDrawer();
     if (d.pos < 0) return null;
-    const path = d.stack[d.pos];
+    const href = d.stack[d.pos];
+    const [name, ...args] = href.replace(/^#\//, "").split("/").map(decodeURIComponent);
     return html`<div class=${`drawer-wrap ${d.closing ? "closing" : ""}`}>
         <div class="drawer-backdrop" onClick=${() => closeDrawer()} />
         <aside class="drawer" data-drawer>
@@ -157,10 +159,12 @@ function Drawer({ index }) {
                 <button title="Forward" disabled=${d.pos >= d.stack.length - 1} onClick=${drawerForward}>→</button>
                 <span class="muted drawer-crumb">${d.pos + 1} / ${d.stack.length}</span>
                 <span style="flex:1" />
-                <button onClick=${() => { if (confirmDiscard("drawer")) { closeDrawer({ force: true }); go(noteHref(path)); } }}>Open page</button>
+                <button onClick=${() => { if (confirmDiscard("drawer")) { closeDrawer({ force: true }); go(href); } }}>Open page</button>
                 <button title="Close" onClick=${() => closeDrawer()}>✕</button>
             </div>
-            <div class="drawer-body" key=${`${d.pos}:${path}`}><${NoteView} index=${index} path=${path} scope="drawer" /></div>
+            <div class="drawer-body" key=${`${d.pos}:${href}`}>${name === "chapter"
+                ? html`<${ChapterView} folder=${args[0]} n=${args[1]} scope="drawer" />`
+                : html`<${NoteView} index=${index} path=${args.join("/")} scope="drawer" />`}</div>
         </aside>
     </div>`;
 }
@@ -271,13 +275,15 @@ function Picker({ value, options, onChange, placeholder, allowFree = true, onCre
 }
 
 /** Multi or single link field editor backed by a data store folder */
-function LinkField({ value, multiple, target, index, onChange }) {
-    const options = useMemo(() => ((target ? index?.inCollection(target) : index?.notes) ?? []).map((n) => ({ label: n.name, hint: n.fm.title !== n.name ? n.fm.title : "" })), [index, target]);
+function LinkField({ value, multiple, target, index, onChange, options: given }) {
+    const computed = useMemo(() => (given ? null : ((target ? index?.inCollection(target) : index?.notes) ?? []).map((n) => ({ label: n.name, hint: n.fm.title !== n.name ? n.fm.title : "" }))), [index, target, given]);
+    const options = given ?? computed;
     const values = asList(value);
     const add = async (o) => {
         if (!o) return;
         let name = o.label;
-        if (o.free && !index.resolve(name) && target) {
+        // "@plots" style targets are novel folders: free text just links by name
+        if (o.free && !index.resolve(name) && target && !target.startsWith("@")) {
             if (!confirm(`Create “${name}” in ${collectionLabel(target)}?`)) return;
             const r = await api.send("POST", "/api/note", { collection: target, name });
             name = r.path.split("/").pop().replace(/\.md$/, "");
@@ -286,7 +292,7 @@ function LinkField({ value, multiple, target, index, onChange }) {
     };
     return html`<div>
         ${multiple && html`<div>${values.map((v) => html`<${Chip} value=${v} index=${index} onRemove=${() => onChange(values.filter((x) => x !== v))} />`)}</div>`}
-        <${Picker} value=${multiple ? "" : linkLabel(value ?? "")} options=${options} onChange=${add} placeholder=${target ? `Search ${collectionLabel(target)}…` : "Search notes…"} />
+        <${Picker} value=${multiple ? "" : linkLabel(value ?? "")} options=${options} onChange=${add} placeholder=${target ? `Search ${collectionLabel(target.replace(/^@/, ""))}…` : "Search notes…"} />
     </div>`;
 }
 
@@ -638,7 +644,7 @@ const isEmpty = (v) => v == null || v === "" || (Array.isArray(v) && !v.length);
 const sameValue = (a, b) => (isEmpty(coerce(a)) ? "" : JSON.stringify(coerce(a))) === (isEmpty(coerce(b)) ? "" : JSON.stringify(coerce(b)));
 
 /** Frontmatter of any note as an always-editable form; only changed keys are patched */
-function FieldsEditor({ page, index, spec, scope }) {
+function FieldsEditor({ page, index, spec, scope, linkOptions }) {
     const [edits, setEdits] = useState({});
     const [baseMtime, setBaseMtime] = useState(null);
     // values just saved, shown until the refetched page catches up
@@ -674,7 +680,7 @@ function FieldsEditor({ page, index, spec, scope }) {
         const def = defs.has(k) ? defs.get(k) : Array.isArray(fm[k]) ? [] : typeof fm[k] === "boolean" ? false : "";
         // unknown keys holding links get a link picker over all notes
         const target = spec?.links?.[k] ?? (asList(fm[k]).some(isLink) ? "" : undefined);
-        return fieldInput({ key: k, def, target, value, index, onChange: (v) => edit(k, v) });
+        return fieldInput({ key: k, def, target, value, index, options: target?.startsWith("@") ? linkOptions?.[target] ?? [] : undefined, onChange: (v) => edit(k, v) });
     };
     return html`<div onKeyDown=${(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); } }}>
         <div class="formgrid">${keys.map((k) => html`
@@ -691,9 +697,14 @@ function FieldsEditor({ page, index, spec, scope }) {
 
 function NoteView({ index, path, scope = "page" }) {
     const { data: page, error } = useApi(`/api/note?${qs({ path })}`);
+    const { data: plan } = useApi(page?.plan ? `/api/plan?${qs({ novel: page.plan.novel })}` : null);
+    const linkOptions = useMemo(() => plan && {
+        "@plots": plan.plots.map((p) => ({ label: p.name, hint: p.title !== p.name ? p.title : p.rating?.title ?? "" })),
+        "@characters": plan.characters.map((c) => ({ label: c.name })),
+    }, [plan]);
     if (!page) return html`<${Loading} error=${error} />`;
     const schema = index?.schema;
-    const spec = page.collection ? schema?.collections[page.collection] : page.fm.type === "character" ? schema?.characters : null;
+    const spec = page.plan?.spec ?? (page.collection ? schema?.collections[page.collection] : page.fm.type === "character" ? schema?.characters : null);
     const novel = index?.novels.find((n) => page.path.startsWith(`${n.folder}/`));
     return html`<div>
         <div class="spread">
@@ -708,9 +719,9 @@ function NoteView({ index, path, scope = "page" }) {
         </div>
         ${page.fmError && html`<div class="warnbox">Frontmatter could not be read: ${page.fmError}</div>`}
         <${Gallery} images=${page.images} />
-        <div class="grid2">
+        <div class=${page.plan ? "" : "grid2"}>
             <div class="panel">${page.fmError ? html`<p class="muted">Fix the frontmatter in Obsidian to edit fields here.</p>`
-                : html`<${FieldsEditor} key=${page.path} page=${page} index=${index} spec=${spec} scope=${scope} />`}</div>
+                : html`<${FieldsEditor} key=${page.path} page=${page} index=${index} spec=${spec} scope=${scope} linkOptions=${linkOptions} />`}</div>
             <div>
                 ${page.heldBy?.length > 0 && html`<div class="panel"><h3>Held by</h3>${page.heldBy.map((x) => html`<div><a href=${`#/owner/${encodeURIComponent(x.novel)}/${encodeURIComponent(x.owner)}`}>${x.owner}</a> <span class="muted">${x.qtyText}${x.store !== "inventory" ? ` @ ${x.store}` : ""} · ${x.novel}</span></div>`)}</div>`}
                 ${page.whereUsed?.length > 0 && html`<div class="panel"><h3>Used in</h3><${WhereUsed} uses=${page.whereUsed} /></div>`}
@@ -718,7 +729,9 @@ function NoteView({ index, path, scope = "page" }) {
             </div>
         </div>
         ${page.blueprint && html`<${BlueprintPanel} page=${page} />`}
-        ${page.body.trim() && html`<div class="panel"><${Html} html=${page.html} /></div>`}
+        ${page.body.trim() && (page.plan
+            ? html`<details class="panel"><summary class="muted">Note body (not used by the plan, edit it in Obsidian)</summary><${Html} html=${page.html} /></details>`
+            : html`<div class="panel"><${Html} html=${page.html} /></div>`)}
         ${Object.keys(page.backlinks).length > 0 && html`<div class="panel"><h3>Linked from</h3>
             ${Object.entries(page.backlinks).sort((a, b) => b[1].length - a[1].length).map(([c, list]) => html`<div style="margin-bottom:6px"><b class="muted">${collectionLabel(c)} (${list.length})</b><div>${list.slice(0, 60).map((b) => html`<a class="chip" href=${noteHref(b.path)}>${b.name}</a>`)}${list.length > 60 ? html`<span class="muted"> +${list.length - 60} more</span>` : ""}</div></div>`)}</div>`}
     </div>`;
@@ -726,11 +739,155 @@ function NoteView({ index, path, scope = "page" }) {
 
 // ------------------------------------------------------------------ create / edit notes
 
-function fieldInput({ key, def, target, value, onChange, index }) {
-    if (target != null) return html`<${LinkField} value=${value} multiple=${Array.isArray(def)} target=${target} index=${index} onChange=${onChange} />`;
+/** Textarea that grows with its content */
+function AutoTextarea({ value, onInput, class: cls = "", ...rest }) {
+    const ref = useRef();
+    useLayoutEffect(() => { const el = ref.current; if (el) { el.style.height = "auto"; el.style.height = `${el.scrollHeight + 2}px`; } });
+    return html`<textarea ref=${ref} class=${`auto ${cls}`} value=${value ?? ""} onInput=${onInput} ...${rest} />`;
+}
+
+/** Read-only plan outline: nested lists, extra space between top-level events */
+function PlanView({ text, limit }) {
+    const items = parseOutline(text);
+    if (!items.length) return html`<p class="muted">No plan yet.</p>`;
+    const shown = limit ? items.filter((it) => it.level === 0).slice(0, limit) : items;
+    const tree = [];
+    const stack = [{ level: -1, children: tree }];
+    for (const it of shown) {
+        while (stack.at(-1).level >= it.level) stack.pop();
+        const node = { ...it, children: [] };
+        stack.at(-1).children.push(node);
+        stack.push(node);
+    }
+    const list = (nodes, depth) => html`<ul class=${`plan-list depth-${Math.min(depth, 3)}`}>${nodes.map((n) => html`<li>${n.text}${n.children.length > 0 && list(n.children, depth + 1)}</li>`)}</ul>`;
+    const more = limit ? items.filter((it) => it.level === 0).length - shown.length : 0;
+    return html`<div class=${`plan ${limit ? "compact" : ""}`}>${list(tree, 0)}${more > 0 && html`<div class="muted plan-more">+${more} more</div>`}</div>`;
+}
+
+/**
+ * Outline editor for event plans. One item per line; its indent is the event level. Enter starts the next
+ * item at the same level, Tab / Shift+Tab indent and outdent (with sub events), Backspace at the start
+ * outdents or joins the previous item, Alt+↑/↓ moves an item, pasted text is split into items.
+ * Emits markdown bullets (see outline.js).
+ */
+function PlanEditor({ value, onChange, placeholder = "First event…" }) {
+    const fromValue = (v) => { const it = parseOutline(v); return it.length ? it : [{ level: 0, text: "" }]; };
+    const [items, setItems] = useState(() => fromValue(value));
+    const emitted = useRef(value ?? "");
+    const refs = useRef([]);
+    const focus = useRef(null);
+    const box = useRef();
+    // external changes (saved elsewhere, reloaded) replace the outline unless they are our own output
+    useEffect(() => { if ((value ?? "") !== emitted.current) { emitted.current = value ?? ""; setItems(fromValue(value)); } }, [value]);
+    const fit = () => { for (const el of refs.current) if (el) { el.style.height = "auto"; el.style.height = `${el.scrollHeight}px`; } };
+    useLayoutEffect(() => {
+        fit();
+        if (focus.current) {
+            const { i, pos } = focus.current;
+            focus.current = null;
+            const el = refs.current[i];
+            if (el) { el.focus(); const p = Math.min(pos ?? el.value.length, el.value.length); el.setSelectionRange(p, p); }
+        }
+    });
+    useEffect(() => {
+        if (typeof ResizeObserver !== "function" || !box.current) return;
+        const ro = new ResizeObserver(fit);
+        ro.observe(box.current);
+        return () => ro.disconnect();
+    }, []);
+    const commit = (next, f) => {
+        if (f) focus.current = f;
+        setItems(next);
+        const md = serializeOutline(next);
+        if (md !== emitted.current) { emitted.current = md; onChange(md); }
+    };
+    // an item and the sub events under it
+    const subtree = (list, i) => { let j = i + 1; while (j < list.length && list[j].level > list[i].level) j++; return [i, j]; };
+    const shift = (list, i, by) => {
+        const [a, b] = subtree(list, i);
+        return list.map((it, k) => (k >= a && k < b ? { ...it, level: Math.max(0, it.level + by) } : it));
+    };
+    const onKeyDown = (i) => (e) => {
+        const el = e.target, it = items[i];
+        const start = el.selectionStart, end = el.selectionEnd;
+        if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            if (!it.text && it.level > 0) return commit(shift(items, i, -1), { i, pos: 0 });
+            const next = [...items];
+            next.splice(i, 1, { ...it, text: it.text.slice(0, start) }, { level: it.level, text: it.text.slice(end) });
+            return commit(next, { i: i + 1, pos: 0 });
+        }
+        if (e.key === "Tab") {
+            e.preventDefault();
+            if (e.shiftKey) { if (it.level > 0) commit(shift(items, i, -1), { i, pos: start }); }
+            else if (i > 0 && it.level <= items[i - 1].level) commit(shift(items, i, 1), { i, pos: start });
+            return;
+        }
+        if (e.key === "Backspace" && start === 0 && end === 0) {
+            if (it.level > 0) { e.preventDefault(); return commit(shift(items, i, -1), { i, pos: 0 }); }
+            if (i > 0) {
+                e.preventDefault();
+                const prev = items[i - 1];
+                const next = [...items];
+                next.splice(i - 1, 2, { ...prev, text: prev.text + it.text });
+                return commit(next, { i: i - 1, pos: prev.text.length });
+            }
+        }
+        if (e.key === "Delete" && start === it.text.length && end === start && i < items.length - 1) {
+            e.preventDefault();
+            const next = [...items];
+            next.splice(i, 2, { ...it, text: it.text + items[i + 1].text });
+            return commit(next, { i, pos: start });
+        }
+        if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+            e.preventDefault();
+            const j = e.key === "ArrowUp" ? i - 1 : i + 1;
+            if (j < 0 || j >= items.length) return;
+            const next = [...items];
+            [next[i], next[j]] = [next[j], next[i]];
+            return commit(next, { i: j, pos: start });
+        }
+        // move between items when the caret can't move further inside this one
+        const oneRow = el.scrollHeight <= parseFloat(getComputedStyle(el).lineHeight || "0") * 1.5 + 8;
+        if (e.key === "ArrowUp" && i > 0 && (start === 0 || oneRow)) { e.preventDefault(); focus.current = { i: i - 1, pos: start }; setItems([...items]); }
+        if (e.key === "ArrowDown" && i < items.length - 1 && (start === it.text.length || oneRow)) { e.preventDefault(); focus.current = { i: i + 1, pos: start }; setItems([...items]); }
+    };
+    const onPaste = (i) => (e) => {
+        const text = e.clipboardData?.getData("text/plain") ?? "";
+        if (!text.includes("\n")) return;
+        e.preventDefault();
+        const it = items[i];
+        const pasted = parseOutline(text).map((p) => ({ ...p, level: p.level + it.level }));
+        if (!pasted.length) return;
+        const next = [...items];
+        const el = e.target;
+        const before = it.text.slice(0, el.selectionStart), after = it.text.slice(el.selectionEnd);
+        pasted[0] = { ...pasted[0], level: it.level, text: before + pasted[0].text };
+        const last = pasted.length - 1;
+        const caret = pasted[last].text.length;
+        pasted[last] = { ...pasted[last], text: pasted[last].text + after };
+        next.splice(i, 1, ...pasted);
+        commit(next, { i: i + last, pos: caret });
+    };
+    refs.current.length = items.length;
+    return html`<div class="plan-editor" ref=${box}>
+        ${items.map((it, i) => html`<div class=${`plan-row lvl-${Math.min(it.level, 3)} ${it.level === 0 && i > 0 ? "top" : ""}`} style=${`--level:${it.level}`}>
+            <span class="plan-bullet" aria-hidden="true" />
+            <textarea ref=${(el) => { refs.current[i] = el; }} rows="1" value=${it.text} placeholder=${i === 0 ? placeholder : ""} spellcheck="true"
+                onInput=${(e) => commit(items.map((x, k) => (k === i ? { ...x, text: e.target.value.replace(/\n/g, " ") } : x)))}
+                onKeyDown=${onKeyDown(i)} onPaste=${onPaste(i)} />
+        </div>`)}
+        <div class="plan-hint muted">Enter: next event · Tab / Shift+Tab: sub event / back out · Alt+↑↓: move</div>
+    </div>`;
+}
+
+function fieldInput({ key, def, target, value, onChange, index, options }) {
+    if (target != null) return html`<${LinkField} value=${value} multiple=${Array.isArray(def)} target=${target} index=${index} onChange=${onChange} options=${options} />`;
     if (typeof def === "boolean") return html`<input type="checkbox" checked=${!!value} onChange=${(e) => onChange(e.target.checked)} style="width:auto" />`;
     if (Array.isArray(def)) return html`<input value=${asList(value).join(", ")} placeholder="comma separated" onChange=${(e) => onChange(e.target.value.split(",").map((s) => s.trim()).filter(Boolean))} />`;
-    if (["description", "personality", "appearance"].includes(key)) return html`<textarea value=${value ?? ""} onInput=${(e) => onChange(e.target.value)} style="font-family:inherit" />`;
+    if (key === "plan") return html`<${PlanEditor} value=${value ?? ""} onChange=${onChange} />`;
+    if (key === "plot") return html`<${AutoTextarea} class="prose" value=${value} onInput=${(e) => onChange(e.target.value)} placeholder="The plot idea…" />`;
+    if (["description", "personality", "appearance"].includes(key)) return html`<${AutoTextarea} value=${value} onInput=${(e) => onChange(e.target.value)} style="font-family:inherit" />`;
     return html`<input value=${value ?? ""} onInput=${(e) => onChange(e.target.value)} style="width:100%" />`;
 }
 const coerce = (v) => (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v);
@@ -789,12 +946,14 @@ const ownerHref = (folder, owner) => `#/owner/${encodeURIComponent(folder)}/${en
 const chapterHref = (folder, n) => `#/chapter/${encodeURIComponent(folder)}/${n}`;
 const entryHref = (folder, p) => `#/entry/${encodeURIComponent(folder)}?${qs(p)}`;
 
+const NOVEL_TABS = [["plan", "Grand plan"], ["plots", "Plots"], ["people", "Characters & ledgers"]];
+
 function NovelView({ folder }) {
     const { data: novel, error } = useApi(`/api/novel?${qs({ folder })}`);
+    const { data: plan } = useApi(`/api/plan?${qs({ novel: folder })}`);
+    const [tab, setTabState] = useState(store.get("novelTab", "plan"));
+    const setTab = (t) => { setTabState(t); store.set("novelTab", t); };
     if (!novel) return html`<${Loading} error=${error} />`;
-    const characterNames = new Set(novel.characters.map((c) => c.name.toLowerCase()));
-    const otherOwners = [...new Set(novel.ledgers.map((l) => l.owner))].filter((o) => !characterNames.has(o.toLowerCase()));
-    const ledgersOf = (o) => novel.ledgers.filter((l) => l.owner.toLowerCase() === o.toLowerCase());
     return html`<div>
         <div class="spread">
             <div><div class="muted">${novel.folder}</div><h1>${novel.name}</h1></div>
@@ -805,17 +964,155 @@ function NovelView({ folder }) {
                 <button onClick=${async () => { const r = await api.send("POST", `/api/sync-sheets?${qs({ novel: folder })}`); toast(`Synced ${r.filter((x) => x.changed.length).length} sheets`); }}>Sync sheets</button>
             </div>
         </div>
-        <h2>Characters</h2>
+        <div class="tabs">${NOVEL_TABS.map(([k, label]) => html`<button class=${tab === k ? "on" : ""} onClick=${() => setTab(k)}>${label}</button>`)}</div>
+        <div class="tab-body" key=${tab}>
+            ${tab === "people" ? html`<${NovelPeople} folder=${folder} novel=${novel} />`
+                : !plan ? html`<${Loading} />`
+                : tab === "plots" ? html`<${PlotBoard} folder=${folder} plan=${plan} />`
+                : html`<${GrandPlan} folder=${folder} plan=${plan} />`}
+        </div>
+    </div>`;
+}
+
+function NovelPeople({ folder, novel }) {
+    const characterNames = new Set(novel.characters.map((c) => c.name.toLowerCase()));
+    const otherOwners = [...new Set(novel.ledgers.map((l) => l.owner))].filter((o) => !characterNames.has(o.toLowerCase()));
+    const ledgersOf = (o) => novel.ledgers.filter((l) => l.owner.toLowerCase() === o.toLowerCase());
+    return html`<div>
+        <h2 style="margin-top:0">Characters</h2>
         <div class="cards">${novel.characters.map((c) => html`<a class="card" href=${ownerHref(folder, c.name)}>
             ${c.cover && html`<div class="cover" style=${`background-image:url("${c.cover}")`} />`}
             <div class="body"><h3>${c.name}</h3>
                 <div>${ledgersOf(c.name).map((l) => html`<span class="chip">${l.type} ${l.entries}</span>`)}</div>
                 <p>${c.fm.personality ?? ""}</p></div></a>`)}</div>
         ${otherOwners.length > 0 && html`<h2>Other ledger owners</h2><div class="cards">${otherOwners.map((o) => html`<a class="card" href=${ownerHref(folder, o)}><div class="body"><h3>${o}</h3><div>${ledgersOf(o).map((l) => html`<span class="chip">${l.type} ${l.entries}</span>`)}</div></div></a>`)}</div>`}
-        <h2>Chapters</h2>
-        <div class="chapters">${novel.chapters.map((c) => html`<a href=${chapterHref(folder, c.number)} class="row"><span class="badge">${c.number}</span> ${c.title} ${c.draft ? html`<span class="badge">draft</span>` : ""} ${c.entries ? html`<span class="chip">${c.entries} entries</span>` : ""}</a>`)}</div>
         <h2>Ledger types</h2>
         <div class="panel"><table><tbody>${Object.values(novel.ledgerTypes).map((t) => html`<tr><td><b>${t.name}</b></td><td><span class="badge">${t.behaviour}</span></td><td class="muted">${t.description ?? ""}</td><td>${Object.keys(t.callouts).map((c) => html`<span class="chip">${c}</span>`)}</td></tr>`)}</tbody></table></div>
+    </div>`;
+}
+
+/** Link value -> plot of this novel (by name, alias-free like the rest of the vault) */
+const plotByLink = (plan, v) => plan.plots.find((p) => p.name.toLowerCase() === linkTarget(v).toLowerCase()) ?? null;
+const linkTarget = (v) => String(v ?? "").replace(/^!?\[\[|\]\]$/g, "").split("|")[0].split("#")[0].trim();
+const ratingLink = (r) => (r.name === r.title ? toLink(r.name) : `[[${r.name}|${r.title}]]`);
+
+function PlotChip({ plan, value, main }) {
+    const p = plotByLink(plan, value);
+    const label = p?.title ?? linkLabel(value);
+    if (!p) return html`<span class="chip unresolved" title="No plot note with this name">${label}</span>`;
+    return html`<a class=${`chip plot-chip ${main ? "main" : ""}`} href=${noteHref(p.path)} title=${main ? "Main plot" : "Subplot"}>${main ? "★ " : ""}${label}</a>`;
+}
+
+function ChapterRow({ folder, c }) {
+    return html`<a class="chapter-row" href=${chapterHref(folder, c.number)} data-flip=${`ch|${c.number}`}>
+        <div class="chapter-head">
+            <span class="badge">${c.number}</span>
+            <b>${c.title || html`<span class="muted">Untitled</span>`}</b>
+            ${c.notePath ? html`<span class="badge ok">written</span>` : html`<span class="badge">planned</span>`}
+            ${c.draft && html`<span class="badge">draft</span>`}
+            ${!c.plan.trim() && html`<span class="badge warn">no plan</span>`}
+            ${c.entries > 0 && html`<span class="chip">${c.entries} entries</span>`}
+        </div>
+        ${c.plan.trim() && html`<${PlanView} text=${c.plan} limit=${3} />`}
+    </a>`;
+}
+
+function GrandPlan({ folder, plan }) {
+    const flip = useFlip();
+    const nonDraft = plan.chapters.filter((c) => !c.draft);
+    const inVolume = (v) => nonDraft.filter((c) => c.volume === v.path);
+    const loose = nonDraft.filter((c) => !c.volume);
+    const drafts = plan.chapters.filter((c) => c.draft);
+    const lastChapter = Math.max(0, ...nonDraft.map((c) => c.number));
+    const newVolume = async () => {
+        const title = prompt("Volume title");
+        if (!title?.trim()) return;
+        const prev = plan.volumes.at(-1);
+        const start = (prev?.end ?? lastChapter) + 1;
+        try {
+            const r = await api.send("POST", "/api/plan/volume", { novel: folder, title: title.trim(), fm: { number: (prev?.number ?? 0) + 1, "chapter-start": start } });
+            openInDrawer(noteHref(r.path));
+        } catch (e) { toast(e.message); }
+    };
+    const nextIn = (v, list) => {
+        const n = Math.max((v.start ?? 1) - 1, ...list.map((c) => c.number)) + 1;
+        return v.end == null || n <= v.end ? n : null;
+    };
+    return html`<div ref=${flip} data-drawer>
+        <div class="spread" style="margin-bottom:12px">
+            <p class="muted" style="margin:0">${plan.volumes.length} volumes · ${nonDraft.length} chapters · ${nonDraft.filter((c) => c.plan.trim()).length} planned</p>
+            <div class="row">
+                <a class="button" href=${chapterHref(folder, lastChapter + 1)}>Plan chapter ${lastChapter + 1}</a>
+                <button class="primary" onClick=${newVolume}>New volume</button>
+            </div>
+        </div>
+        ${!plan.volumes.length && html`<p class="muted">No volumes yet. A volume groups a chapter range and the plots it covers.</p>`}
+        ${plan.volumes.map((v) => {
+            const list = inVolume(v);
+            const next = nextIn(v, list);
+            return html`<section class="panel volume" key=${v.path} data-flip=${`vol|${v.path}`}>
+                <div class="spread">
+                    <h2><a href=${noteHref(v.path)}>${v.number != null ? html`<span class="muted">Volume ${v.number} · </span>` : ""}${v.title}</a></h2>
+                    <span class="muted">Chapters ${v.start ?? "?"}–${v.end ?? "…"} · ${list.length} listed</span>
+                </div>
+                <div class="volume-plots">
+                    ${v.fm.plot && html`<${PlotChip} plan=${plan} value=${v.fm.plot} main=${true} />`}
+                    ${asList(v.fm.subplots).map((sp) => html`<${PlotChip} plan=${plan} value=${sp} />`)}
+                </div>
+                ${v.fm.description && html`<p>${v.fm.description}</p>`}
+                ${String(v.fm.plan ?? "").trim() && html`<details class="volume-outline"><summary>Volume outline</summary><${PlanView} text=${v.fm.plan} /></details>`}
+                <div class="chapter-list">${list.map((c) => html`<${ChapterRow} key=${c.number} folder=${folder} c=${c} />`)}</div>
+                ${next != null && html`<a class="add-chapter" href=${chapterHref(folder, next)}>+ Plan chapter ${next}</a>`}
+            </section>`;
+        })}
+        ${loose.length > 0 && html`<section class="panel volume" data-flip="vol|loose"><h2>Not in a volume</h2>
+            <p class="muted">Set a volume's chapter range to include these.</p>
+            <div class="chapter-list">${loose.map((c) => html`<${ChapterRow} key=${c.number} folder=${folder} c=${c} />`)}</div></section>`}
+        ${drafts.length > 0 && html`<section class="panel volume" data-flip="vol|drafts"><h2>Drafts <span class="muted" style="font-size:13px">chapter ${plan.draftFrom}+</span></h2>
+            <div class="chapter-list">${drafts.map((c) => html`<${ChapterRow} key=${c.number} folder=${folder} c=${c} />`)}</div></section>`}
+    </div>`;
+}
+
+function PlotBoard({ folder, plan }) {
+    const flip = useFlip();
+    const usage = (p) => plan.volumes.flatMap((v) => [
+        ...(plotByLink(plan, v.fm.plot)?.path === p.path ? [{ v, main: true }] : []),
+        ...asList(v.fm.subplots).filter((sp) => plotByLink(plan, sp)?.path === p.path).map(() => ({ v, main: false })),
+    ]);
+    const groups = [...plan.ratings.map((r) => [r, plan.plots.filter((p) => p.rating?.path === r.path)]), [null, plan.plots.filter((p) => !p.rating)]]
+        .filter(([r, list]) => list.length || r);
+    const newPlot = async () => {
+        const title = prompt("Plot title");
+        if (!title?.trim()) return;
+        try { const r = await api.send("POST", "/api/plan/plot", { novel: folder, title: title.trim() }); openInDrawer(noteHref(r.path)); }
+        catch (e) { toast(e.message); }
+    };
+    const grade = async (p, path) => {
+        const r = plan.ratings.find((x) => x.path === path);
+        try { await api.send("PATCH", "/api/note", { path: p.path, set: { rating: r ? ratingLink(r) : "" }, baseMtime: p.mtime }); toast(`${p.title}: ${r?.title ?? "unrated"}`); }
+        catch (e) { toast(e.message); }
+    };
+    return html`<div ref=${flip} data-drawer>
+        <div class="spread" style="margin-bottom:12px">
+            <p class="muted" style="margin:0">${plan.plots.length} plot ideas, graded by Rating</p>
+            <button class="primary" onClick=${newPlot}>New plot</button>
+        </div>
+        ${groups.map(([r, list]) => html`<section class="plot-grade" key=${r?.path ?? "none"}>
+            <h2>${r ? r.title : "Unrated"} <span class="muted" style="font-size:13px">${list.length}</span></h2>
+            ${list.length ? html`<div class="plot-cards">${list.map((p) => html`<div class="plot-card" key=${p.path} data-flip=${`plot|${p.path}`}>
+                <div class="spread">
+                    <a class="plot-title" href=${noteHref(p.path)}>${p.title}</a>
+                    <select value=${p.rating?.path ?? ""} onChange=${(e) => grade(p, e.target.value)} title="Grade">
+                        <option value="">Unrated</option>
+                        ${plan.ratings.map((x) => html`<option value=${x.path}>${x.title}</option>`)}
+                    </select>
+                </div>
+                <div>${usage(p).map((u) => html`<span class=${`chip ${u.main ? "on" : ""}`}>${u.main ? "★ " : ""}Vol ${u.v.number ?? "?"} ${u.main ? "main" : "sub"}</span>`)}
+                    ${p.fm.mood && html`<span class="chip">${p.fm.mood}</span>`}
+                    ${asList(p.fm.characters).map((c) => html`<span class="chip">${linkLabel(c)}</span>`)}</div>
+                <p class="plot-text">${String(p.fm.plot ?? "").trim() || html`<span class="muted">No plot text yet.</span>`}</p>
+            </div>`)}</div>` : html`<p class="muted">None.</p>`}
+        </section>`)}
     </div>`;
 }
 
@@ -908,7 +1205,50 @@ function holdingsTable(stacks) {
         <table><tbody>${list.map((s) => html`<tr><td>${s.itemPath ? html`<a href=${noteHref(s.itemPath)}>${s.itemName}</a>` : html`<span title="Misc item">${s.itemName} <span class="badge">misc</span></span>`}${s.condition ? html` <span class="muted">(${s.condition})</span>` : ""}</td><td class="num" style=${s.qty < 0 ? "color:var(--bad)" : ""}>${s.qtyText}</td></tr>`)}</tbody></table></div>`)}`;
 }
 
-function ChapterView({ folder, n }) {
+/** A chapter's plan (and working title while there's no chapter note); saved with "Save changes" */
+function ChapterPlan({ folder, n, plan, hasNote, scope }) {
+    const server = { plan: String(plan?.fm.plan ?? ""), title: String(plan?.fm.title ?? "") };
+    const mtime = plan?.mtime ?? 0;
+    const [edits, setEdits] = useState({});
+    const [baseMtime, setBaseMtime] = useState(null);
+    const [saved, setSaved] = useState({ mtime: 0, vals: {} });
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const cur = mtime >= saved.mtime ? server : { ...server, ...saved.vals };
+    const val = (k) => (k in edits ? edits[k] : cur[k]);
+    const changed = Object.keys(edits).filter((k) => edits[k] !== cur[k]);
+    const dirty = changed.length > 0;
+    const key = `plan:${folder}:${n}`;
+    useEffect(() => markDirty(scope, key, dirty), [dirty]);
+    useEffect(() => () => markDirty(scope, key, false), []);
+    const edit = (k, v) => { if (baseMtime == null) setBaseMtime(mtime); setEdits((s) => ({ ...s, [k]: v })); };
+    const reset = () => { setEdits({}); setBaseMtime(null); setErr(""); };
+    const save = async () => {
+        if (!dirty || busy) return;
+        setBusy(true); setErr("");
+        try {
+            const set = Object.fromEntries(changed.map((k) => [k, edits[k]]));
+            const r = await api.send("POST", "/api/plan/chapter", { novel: folder, n, set, baseMtime: plan ? baseMtime ?? mtime : undefined });
+            setSaved({ mtime: r.mtime, vals: { ...(mtime >= saved.mtime ? {} : saved.vals), ...set } });
+            reset();
+            toast("Plan saved");
+        } catch (e) { setErr(e.message); }
+        setBusy(false);
+    };
+    return html`<div class="panel chapter-plan" onKeyDown=${(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); } }}>
+        <div class="spread"><h2 style="margin:0">Plan</h2>${plan && html`<a class="muted" href=${noteHref(plan.path)} title="The plan note in the vault">${plan.path.split("/").pop().replace(/\.md$/, "")}</a>`}</div>
+        ${!hasNote && html`<label class="row muted" style="margin:8px 0">Working title
+            <input style="flex:1" value=${val("title")} onInput=${(e) => edit("title", e.target.value)} placeholder="Chapter title" /></label>`}
+        <${PlanEditor} value=${val("plan")} onChange=${(v) => edit("plan", v)} />
+        ${err && html`<p class="error">${err}</p>`}
+        <div class=${`savebar ${dirty ? "dirty" : ""}`}>
+            <button class="primary" disabled=${!dirty || busy} onClick=${save}>${busy ? "Saving…" : "Save changes"}</button>
+            ${dirty && html`<button onClick=${reset}>Discard</button><span class="muted">Ctrl+S</span>`}
+        </div>
+    </div>`;
+}
+
+function ChapterView({ folder, n, scope = "page" }) {
     const num = Number(n);
     const { data, error } = useApi(`/api/chapter?${qs({ novel: folder, n: num })}`);
     const { data: novel } = useApi(`/api/novel?${qs({ folder })}`);
@@ -917,22 +1257,31 @@ function ChapterView({ folder, n }) {
     const entries = data.entries.filter((e) => !type || e.type === type);
     const types = [...new Set(data.entries.map((e) => e.type))];
     const beh = (t) => novel.ledgerTypes[t]?.behaviour;
-    const nums = novel.chapters.map((c) => c.number);
-    const prev = nums.filter((x) => x < num).at(-1), next = nums.find((x) => x > num);
+    const title = data.chapter?.title || data.plan?.fm.title || "";
+    const unplaced = data.entries.filter((e) => !e.placed && !e.fields["mirror-of"]).length;
     return html`<div>
         <div class="spread">
-            <div><div class="muted"><a href=${novelHref(folder)}>${novel.name}</a></div>
-                <h1>Chapter ${num}${data.chapter ? `: ${data.chapter.title}` : ""}</h1></div>
+            <div><div class="muted"><a href=${novelHref(folder)} data-page>${novel.name}</a>${data.volume && html` · <a href=${noteHref(data.volume.path)}>${data.volume.label}</a>`}</div>
+                <h1>Chapter ${num}${title ? `: ${title}` : ""}</h1></div>
             <div class="row">
-                ${prev != null && html`<button onClick=${() => go(chapterHref(folder, prev))}>← ${prev}</button>`}
-                ${next != null && html`<button onClick=${() => go(chapterHref(folder, next))}>${next} →</button>`}
+                ${data.prev != null && html`<a class="button" href=${chapterHref(folder, data.prev)}>← ${data.prev}</a>`}
+                ${html`<a class="button" href=${chapterHref(folder, data.next ?? num + 1)}>${data.next ?? num + 1} →</a>`}
+            </div>
+        </div>
+        <p class="row">
+            ${data.chapter ? html`<a href=${noteHref(data.chapter.path)}>Open chapter note</a>` : html`<span class="badge">not written yet</span>`}
+            ${data.entries.length > 0 && html`<span class="muted">${unplaced} ${unplaced === 1 ? "entry" : "entries"} not yet in the chapter text</span>`}
+        </p>
+        <${ChapterPlan} key=${`${folder}:${num}`} folder=${folder} n=${num} plan=${data.plan} hasNote=${!!data.chapter} scope=${scope} />
+        <div class="spread" style="margin-top:18px">
+            <h2 style="margin:0">Ledger entries <span class="muted" style="font-size:13px">${data.entries.length}</span></h2>
+            <div class="row">
                 <button class="primary" onClick=${() => go(entryHref(folder, { chapter: num }))}>New entry</button>
                 <button disabled=${!entries.length} onClick=${() => copyText(entries.map((e) => e.callout).join("\n\n"), `Copied ${entries.length} callouts`)}>⧉ Copy all</button>
             </div>
         </div>
-        ${data.chapter && html`<p><a href=${noteHref(data.chapter.path)}>Open chapter note</a> · <span class="muted">${data.entries.filter((e) => !e.placed && !e.fields["mirror-of"]).length} entries not yet in the chapter text</span></p>`}
-        ${types.length > 1 && html`<div class="row" style="margin-bottom:10px"><a class=${`chip ${!type ? "on" : ""}`} href="javascript:" onClick=${() => setType("")}>All</a>${types.map((t) => html`<a class=${`chip ${type === t ? "on" : ""}`} href="javascript:" onClick=${() => setType(t)}>${t}</a>`)}</div>`}
-        ${entries.length ? entries.map((e) => html`<${EntryCard} e=${e} folder=${folder} behaviour=${beh(e.type)} showOwner=${true} />`) : html`<p class="muted">No entries in this chapter.</p>`}
+        ${types.length > 1 && html`<div class="row" style="margin:10px 0">${[["", "All"], ...types.map((t) => [t, t])].map(([t, label]) => html`<a class=${`chip ${type === t ? "on" : ""}`} href="javascript:" onClick=${() => setType(t)}>${label}</a>`)}</div>`}
+        <div style="margin-top:10px">${entries.length ? entries.map((e) => html`<${EntryCard} e=${e} folder=${folder} behaviour=${beh(e.type)} showOwner=${true} />`) : html`<p class="muted">No entries in this chapter.</p>`}</div>
     </div>`;
 }
 
@@ -1202,7 +1551,7 @@ function App() {
     const [novelFilter, setNovelFilter] = useState(store.get("novelFilter", ""));
     const setNF = (v) => { setNovelFilter(v); store.set("novelFilter", v); };
     const [a, b] = route.args;
-    useEffect(() => closeDrawer({ force: true }), [location.hash]);
+    useEffect(() => closeDrawer(), [location.hash]);
     let view;
     switch (route.name) {
         case "c": view = html`<${CollectionView} index=${index} collection=${a} novelFilter=${novelFilter} />`; break;
