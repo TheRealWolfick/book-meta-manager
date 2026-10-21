@@ -79,5 +79,86 @@ if (owner) {
     if (!saved) failed++;
     console.log(`${saved ? "ok  " : "FAIL"} create entry through the editor`);
 }
+const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok ? "ok  " : "FAIL"} ${label}${!ok && detail ? `\n     ${detail}` : ""}`); };
+{
+    const doc = w.document;
+    w.location.hash = "#/c/Items";
+    await wait(900);
+    // facets: picking a value greys out (not hides) values with no remaining items
+    const countChips = () => doc.querySelectorAll(".facet .chip").length;
+    const before = countChips();
+    const pick = [...doc.querySelectorAll(".facet .chip")].find((c) => !c.classList.contains("off"));
+    pick.click();
+    await wait(300);
+    check(countChips() === before && doc.querySelectorAll(".facet .chip.off").length > 0, "facet values stay listed and grey out", `${before} -> ${countChips()}`);
+    pick.click();
+    await wait(300);
+
+    // grouping by a list field puts an item in every matching group
+    const catBtn = () => [...doc.querySelectorAll(".groupbar button")].find((b) => b.textContent.trim() === "cat");
+    catBtn().click();
+    await wait(300);
+    const groups = doc.querySelectorAll("section.group");
+    const rows = doc.querySelectorAll("section.group tbody tr").length;
+    const items = index.notes.filter((n) => n.collection === "Items");
+    const expected = items.reduce((s, n) => s + Math.max(1, new Set([n.fm.cat ?? []].flat()).size), 0);
+    check(groups.length > 1 && rows === expected, "group by cat splits into tables", `${groups.length} groups, ${rows} rows, expected ${expected}`);
+
+    // columns: drag an edge to resize every table; hold a header to collapse; both persist in localStorage
+    const pointer = (el, type, init = {}) => el.dispatchEvent(new (w.PointerEvent ?? w.MouseEvent)(type, { bubbles: true, cancelable: true, button: 0, ...init }));
+    const handle = doc.querySelector("section.group th[data-col='cat'] .resizer");
+    pointer(handle, "pointerdown", { clientX: 0 }); pointer(handle, "pointermove", { clientX: 210 }); pointer(handle, "pointerup", { clientX: 210 });
+    await wait(200);
+    const catIdx = [...doc.querySelectorAll("section.group th[data-col]")].findIndex((x) => x.dataset.col === "cat");
+    const colWidths = [...doc.querySelectorAll("main table.coltable")].map((tb) => tb.querySelectorAll("col")[catIdx]?.style.width);
+    check(colWidths.length > 2 && colWidths.every((x) => x === "210px") && w.localStorage.getItem("colWidths:Items")?.includes("210"),
+        "resizing a column applies to all tables and is saved", colWidths.join(","));
+    const header = doc.querySelector("section.group th[data-col='cat']");
+    pointer(header, "pointerdown"); await wait(600); pointer(header, "pointerup"); header.click();
+    await wait(200);
+    check(doc.querySelectorAll("section.group th.collapsed[data-col='cat']").length === groups.length && JSON.parse(w.localStorage.getItem("colHidden:Items")).includes("cat"),
+        "holding a header collapses the column in every table and is saved");
+    doc.querySelector("section.group th[data-col='cat']").click();
+    await wait(200);
+    check(!doc.querySelector("th.collapsed") && w.localStorage.getItem("colHidden:Items") === "[]", "clicking a collapsed column shows it again");
+
+    catBtn().click();
+    await wait(300);
+    check(!doc.querySelector("section.group h2"), "clicking the active group button ungroups");
+
+    // link chips in the table open the drawer; nested links navigate inside it; back closes at the first page
+    const chip = doc.querySelector("main table a.chip");
+    chip.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await wait(700);
+    const drawerOpen = () => !!doc.querySelector(".drawer") && !doc.querySelector(".drawer-wrap.closing");
+    check(drawerOpen() && w.location.hash === "#/c/Items", "table link opens the drawer");
+    const nested = doc.querySelector(".drawer-body a.chip[href^='#/note/']");
+    if (nested) {
+        nested.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+        await wait(700);
+        check(doc.querySelector(".drawer-crumb")?.textContent.trim() === "2 / 2", "nested link navigates inside the drawer");
+        doc.querySelector(".drawer-head button").click();
+        await wait(300);
+        check(doc.querySelector(".drawer-crumb")?.textContent.trim() === "1 / 2", "back returns to the previous drawer page");
+    }
+    doc.querySelector(".drawer-head button").click();
+    await wait(500);
+    check(!doc.querySelector(".drawer"), "back on the first drawer page closes it");
+
+    // notes are editable in place with a Save changes button
+    const note = index.notes.find((n) => n.collection === "Items");
+    w.location.hash = `#/note/${enc(note.path)}`;
+    await wait(900);
+    const label = [...doc.querySelectorAll(".formgrid label")].find((l) => l.textContent === "description");
+    const ta = label?.nextElementSibling;
+    const saveBtn = () => [...doc.querySelectorAll("button")].find((b) => b.textContent.trim() === "Save changes");
+    check(!!saveBtn()?.disabled, "Save changes is disabled until something changes");
+    ta.value = "Smoke test description"; ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+    await wait(100);
+    saveBtn().click();
+    await wait(1000);
+    const text = fs.readFileSync(`${COPY}/${note.path}`, "utf8");
+    check(text.includes("Smoke test description") && saveBtn()?.disabled, "editing a note saves only through Save changes");
+}
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);
