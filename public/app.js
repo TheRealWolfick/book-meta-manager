@@ -65,6 +65,43 @@ const store = {
     set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 
+// ------------------------------------------------------------------ theme: light / dark / system, novel accents
+
+const THEMES = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
+function applyTheme(mode) {
+    if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+    else delete document.documentElement.dataset.theme;
+}
+// Default colour per novel (by position in the novel list) until config.md sets `accent`
+const NOVEL_PALETTE = ["#3D7A5A", "#2F6FB0", "#B03A5B", "#8A4FB8", "#A6621B", "#5E6B78", "#2E7F86", "#7A6A2E", "#B5482F", "#4A5DB0"];
+const novelColour = (index, folder) => {
+    const i = index?.novels.findIndex((n) => n.folder === folder) ?? -1;
+    if (i < 0) return null;
+    const own = index.novels[i].accent;
+    return /^#[0-9a-f]{6}$/i.test(String(own ?? "")) ? own : NOVEL_PALETTE[i % NOVEL_PALETTE.length];
+};
+const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+const toHex = (c) => `#${c.map((v) => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, "0")).join("")}`;
+const mixHex = (a, b, t) => toHex(rgb(a).map((v, i) => v + (rgb(b)[i] - v) * t));
+const luminance = (hex) => {
+    const [r, g, b] = rgb(hex).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrast = (a, b) => { const [x, y] = [luminance(a), luminance(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+/** Nudge a colour toward black (light theme) or white (dark theme) until text in it reads at 4.5:1 on every surface */
+function readableAccent(hex, dark) {
+    const panel = dark ? "#27262c" : "#f0eee9"; // --panel-2, the surface closest to the accent
+    let c = dark ? mixHex(hex, "#ffffff", 0.3) : hex;
+    for (let i = 0; i < 24 && contrast(c, panel) < 4.6; i++) c = mixHex(c, dark ? "#ffffff" : "#000000", 0.08);
+    return c;
+}
+function applyNovelAccent(hex) {
+    const st = document.documentElement.style;
+    if (!hex) { st.removeProperty("--novel-accent"); st.removeProperty("--novel-accent-dark"); return; }
+    st.setProperty("--novel-accent", readableAccent(hex, false));
+    st.setProperty("--novel-accent-dark", readableAccent(hex, true));
+}
+
 let toastTimer;
 function toast(msg) {
     let el = document.querySelector(".toast");
@@ -298,9 +335,11 @@ function LinkField({ value, multiple, target, index, onChange, options: given })
 
 // ------------------------------------------------------------------ layout
 
-function Sidebar({ index }) {
+function Sidebar({ index, novelFolder }) {
     const active = (href) => (location.hash === href ? "active" : "");
     const [showTax, setShowTax] = useState(store.get("showTax", false));
+    const [theme, setThemeState] = useState(store.get("theme", "system"));
+    const setTheme = (m) => { setThemeState(m); store.set("theme", m); applyTheme(m); };
     if (!index) return html`<nav class="sidebar"><div class="brand">Books Meta Viewer</div></nav>`;
     const cols = Object.keys(index.schema.collections);
     const main = cols.filter((c) => !c.startsWith("Taxonomy/"));
@@ -308,13 +347,15 @@ function Sidebar({ index }) {
     return html`<nav class="sidebar">
         <div class="brand"><a href="#/" style="padding:0">Books Meta Viewer</a></div>
         <h4>Novels</h4>
-        ${index.novels.map((n) => html`<a class=${active(`#/novel/${encodeURIComponent(n.folder)}`)} href=${`#/novel/${encodeURIComponent(n.folder)}`}><span>${n.name}</span><span class="count">${n.number}</span></a>`)}
+        ${index.novels.map((n) => html`<a class=${`novel-link ${n.folder === novelFolder ? "active" : ""}`} href=${`#/novel/${encodeURIComponent(n.folder)}`}>
+            <span class="novel-dot" style=${`--dot:${novelColour(index, n.folder)}`} aria-hidden="true" /><span class="name">${n.name}</span><span class="count">${n.number}</span></a>`)}
         <h4>Data store</h4>
         ${main.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${c}</span><span class="count">${index.counts[c] ?? 0}</span></a>`)}
         <h4 style="cursor:pointer" onClick=${() => { setShowTax(!showTax); store.set("showTax", !showTax); }}>Taxonomy ${showTax ? "▾" : "▸"}</h4>
         ${showTax && tax.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${collectionLabel(c)}</span><span class="count">${index.counts[c] ?? 0}</span></a>`)}
         <h4>Tools</h4>
         <a class=${active("#/qa")} href="#/qa"><span>Quality checks</span></a>
+        <div class="theme-switch" role="group" aria-label="Theme">${THEMES.map(([m, label]) => html`<button class=${theme === m ? "on" : ""} aria-pressed=${theme === m} onClick=${() => setTheme(m)}>${label}</button>`)}</div>
     </nav>`;
 }
 
@@ -958,6 +999,7 @@ function NovelView({ folder }) {
         <div class="spread">
             <div><div class="muted">${novel.folder}</div><h1>${novel.name}</h1></div>
             <div class="row">
+                <${NovelColour} novel=${novel} />
                 <button class="primary" onClick=${() => go(entryHref(folder, {}))}>New entry</button>
                 <button onClick=${() => go(`#/newchar/${encodeURIComponent(folder)}`)}>New character</button>
                 <button onClick=${() => go(`#/callouts/${encodeURIComponent(folder)}`)}>Callouts</button>
@@ -972,6 +1014,20 @@ function NovelView({ folder }) {
                 : html`<${GrandPlan} folder=${folder} plan=${plan} />`}
         </div>
     </div>`;
+}
+
+/** The novel's accent colour, saved as `accent` in its config.md */
+function NovelColour({ novel }) {
+    const index = useIndex();
+    const current = novelColour(index, novel.folder) ?? "#6a4fc4";
+    const save = async (set, unset = []) => {
+        try { await api.send("PATCH", "/api/note", { path: novel.configPath, set, unset, baseMtime: novel.configMtime }); toast("Novel colour saved"); }
+        catch (e) { toast(e.message); }
+    };
+    return html`<label class="novel-colour muted" title="Saved as accent in config.md">Colour
+        <input type="color" value=${current} onChange=${(e) => save({ accent: e.target.value })} />
+        ${novel.config.accent && html`<button class="small" onClick=${(e) => { e.preventDefault(); save({}, ["accent"]); }}>Default</button>`}
+    </label>`;
 }
 
 function NovelPeople({ folder, novel }) {
@@ -1552,6 +1608,13 @@ function App() {
     const setNF = (v) => { setNovelFilter(v); store.set("novelFilter", v); };
     const [a, b] = route.args;
     useEffect(() => closeDrawer(), [location.hash]);
+    // the novel you're in tints the app; data store pages follow the novel filter
+    const novelFolder = !index ? null
+        : ["novel", "owner", "chapter", "entry", "callouts", "newchar"].includes(route.name) ? a
+        : route.name === "note" || route.name === "edit" ? index.novels.find((n) => a?.startsWith(`${n.folder}/`))?.folder ?? null
+        : index.novels.find((n) => n.name === novelFilter)?.folder ?? null;
+    const accent = novelColour(index, novelFolder);
+    useEffect(() => applyNovelAccent(accent), [accent]);
     let view;
     switch (route.name) {
         case "c": view = html`<${CollectionView} index=${index} collection=${a} novelFilter=${novelFilter} />`; break;
@@ -1568,7 +1631,7 @@ function App() {
         default: view = html`<${Home} index=${index} />`;
     }
     return html`<div class="layout">
-        <${Sidebar} index=${index} />
+        <${Sidebar} index=${index} novelFolder=${novelFolder} />
         <main class="main">
             <div class="topbar"><${Search} index=${index} /><${NovelFilter} index=${index} value=${novelFilter} onChange=${setNF} /></div>
             <div class="view" key=${route.name + (a ?? "")}>${view}</div>

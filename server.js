@@ -32,6 +32,7 @@ const STATIC = {
     "/app.js": ["public/app.js", "text/javascript"],
     "/style.css": ["public/style.css", "text/css"],
     "/outline.js": ["public/outline.js", "text/javascript"],
+    "/fonts/newsreader-latin.woff2": ["public/fonts/newsreader-latin.woff2", "font/woff2"],
     "/vendor/preact.mjs": ["node_modules/preact/dist/preact.mjs", "text/javascript"],
     "/vendor/hooks.mjs": ["node_modules/preact/hooks/dist/hooks.mjs", "text/javascript"],
     "/vendor/htm.mjs": ["node_modules/htm/dist/htm.module.js", "text/javascript"],

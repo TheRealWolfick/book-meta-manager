@@ -1,21 +1,42 @@
+@font-face {
+    font-family: "Newsreader"; src: url("/fonts/newsreader-latin.woff2") format("woff2");
+    font-weight: 300 800; font-style: normal; font-display: swap;
+}
+/* Novel Accents: neutral light and dark palettes; the accent is the active novel's colour, set by app.js as
+   --novel-accent / --novel-accent-dark (already contrast-adjusted for each palette). data-theme on <html>
+   forces light or dark, otherwise the OS setting decides. */
 :root {
     --bg: #f7f6f3; --panel: #ffffff; --panel-2: #f0eee9; --text: #23211d; --muted: #6f6a60; --line: #e2dfd8;
-    --accent: #7a4fd6; --accent-soft: #efe8fd; --ok: #2f7d4f; --warn: #a65b00; --bad: #b3261e;
+    --accent: var(--novel-accent, #6a4fc4); --on-accent: #ffffff;
+    --ok: #2f7d4f; --warn: #a65b00; --bad: #b3261e;
     --chip: #ece9e2; --radius: 8px; --mono: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    --serif: "Newsreader", "Iowan Old Style", Georgia, serif;
+    --accent-soft: color-mix(in srgb, var(--accent) 13%, var(--panel));
     color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
         --bg: #17161a; --panel: #1f1e23; --panel-2: #27262c; --text: #e8e6e3; --muted: #9a958c; --line: #34323a;
-        --accent: #b195f5; --accent-soft: #2e2840; --ok: #6cc28f; --warn: #e2a24b; --bad: #f08a80; --chip: #2d2c33;
+        --accent: var(--novel-accent-dark, #b195f5); --on-accent: #17161a;
+        --ok: #6cc28f; --warn: #e2a24b; --bad: #f08a80; --chip: #2d2c33;
+        --accent-soft: color-mix(in srgb, var(--accent) 16%, var(--panel));
         color-scheme: dark;
     }
+}
+:root[data-theme="dark"] {
+    --bg: #17161a; --panel: #1f1e23; --panel-2: #27262c; --text: #e8e6e3; --muted: #9a958c; --line: #34323a;
+    --accent: var(--novel-accent-dark, #b195f5); --on-accent: #17161a;
+    --ok: #6cc28f; --warn: #e2a24b; --bad: #f08a80; --chip: #2d2c33;
+    --accent-soft: color-mix(in srgb, var(--accent) 16%, var(--panel));
+    color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 h1, h2, h3, h4 { margin: 0 0 .5em; line-height: 1.25; }
+h1, h2, .sidebar .brand { font-family: var(--serif); font-weight: 600; }
+h1 { letter-spacing: -.005em; }
 h1 { font-size: 22px; } h2 { font-size: 17px; margin-top: 1.2em; } h3 { font-size: 15px; }
 button, input, select, textarea { font: inherit; color: inherit; }
 input, select, textarea { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; min-width: 0; }
@@ -23,7 +44,7 @@ textarea { width: 100%; min-height: 90px; font-family: var(--mono); font-size: 1
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 button { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
 button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 button.danger { color: var(--bad); }
 button.small { padding: 2px 7px; font-size: 12px; }
 button:disabled { opacity: .5; cursor: default; }
@@ -51,7 +72,7 @@ button:disabled { opacity: .5; cursor: default; }
 
 .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--chip); border-radius: 999px; padding: 1px 9px; font-size: 12.5px; margin: 1px 3px 1px 0; color: var(--text); border: 1px solid transparent; }
 a.chip:hover { border-color: var(--accent); text-decoration: none; }
-.chip.on { background: var(--accent); color: #fff; }
+.chip.on { background: var(--accent); color: var(--on-accent); }
 .chip.unresolved { border: 1px dashed var(--muted); background: transparent; }
 .chip .x { cursor: pointer; opacity: .7; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
@@ -134,7 +155,7 @@ tr:hover td { background: var(--panel-2); }
 .groupbar b { font-size: 12px; color: var(--muted); }
 div.groupbar { margin-bottom: 10px; }
 .groupbar button { transition: background-color .18s, color .18s, border-color .18s; margin: 1px 4px 1px 0; }
-.groupbar button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.groupbar button.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
 /* group tables sharing column widths (ColumnTables) */
 .coltables { overflow-x: auto; padding-bottom: 2px; }
@@ -230,6 +251,18 @@ textarea.prose { font-family: inherit; font-size: 14.5px; line-height: 1.75; min
 .plot-title { font-weight: 600; font-size: 15px; }
 .plot-card select { font-size: 12px; padding: 2px 6px; }
 .plot-text { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* novel accents: sidebar dots, drawer strip, theme switch, novel colour picker */
+.sidebar .novel-link { justify-content: flex-start; gap: 8px; align-items: center; }
+.sidebar .novel-link .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.novel-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--dot); box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 12%, transparent); }
+.drawer { border-top: 4px solid var(--accent); transition: border-color .25s; }
+.sidebar .theme-switch { display: flex; gap: 2px; margin: 18px 8px 4px; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
+.theme-switch button { flex: 1; border: none; background: transparent; padding: 4px 6px; font-size: 12px; border-radius: 6px; color: var(--muted); }
+.theme-switch button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.novel-colour { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.novel-colour input[type=color] { width: 34px; height: 28px; padding: 2px; cursor: pointer; }
+.sidebar a.active, a, button.primary, .chip.on { transition: color .25s, background-color .25s, border-color .25s; }
 
 /* page and sort transitions */
 .view { animation: fade-in .2s ease-out; }

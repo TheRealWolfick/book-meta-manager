@@ -58,6 +58,7 @@ ledgers-folder: Ledgers
 volumes-folder: Plan/Book Plan          # plan folders, relative to the novel
 chapter-plans-folder: Plan/Chapter Plans
 plots-folder: Plots
+accent: "#b03a5b"          # optional novel colour (Novel Accents theme); default from NOVEL_PALETTE by list position
 ledger-types:               # optional: add types or override parts of shared ones
   Journal:
     default-callout: maven
@@ -131,7 +132,7 @@ lib/template.js      mustache subset + callout prefixing
 lib/render.js        markdown -> HTML (marked) with wikilinks, image embeds, callouts, inline fields, %% comments
 lib/plans.js         volumes, chapter plans, plots: overview, create, saveChapterPlan, syncVolumes, describe(note)
 public/outline.js    plan outline parse/serialise (served at /outline.js, imported by the server too)
-public/              index.html (import map), app.js (all views, Preact + htm), style.css (light/dark)
+public/              index.html (import map), app.js (all views, Preact + htm), style.css (light/dark), fonts/ (Newsreader)
 scripts/migrate-plans.js             plan restructure, already run 2026-10-21 (see Plans)
 test/run.sh, test/ui-smoke.mjs       npm test: vault copy + jsdom route render + create-entry flow
 ```
@@ -179,6 +180,7 @@ Non-GET requests must send `x-requested-with: books-meta-viewer` (blocks cross-s
 - `ColumnTables`: all group tables share one `<colgroup>` of widths (`table-layout: fixed`), measured from the first table's natural layout. Drag a header's right edge to resize (double-click resets), hold a header to collapse the column to a thin bordered strip (click or hold to restore). Resized widths (`colWidths:<collection>`) and hidden columns (`colHidden:<collection>`) are saved in localStorage; the last column fills the rest. One `.coltables` container scrolls all tables horizontally together.
 - Novel page tabs: Grand plan (volumes with their plots and chapter rows, "Plan chapter N"), Plots (cards grouped by grade, grade select saves `rating`), Characters & ledgers. Chapter links open `ChapterView` in the drawer: `ChapterPlan` (outline editor + Save changes, posts to /api/plan/chapter) above the ledger entries. The drawer stack holds hrefs (`#/note/…`, `#/chapter/…`).
 - `PlanEditor`: one auto-growing textarea per outline item, level = indent; Enter continues at the same level (on an empty sub item it outdents), Tab/Shift+Tab move the item and its sub events, Backspace at the start outdents or joins, Alt+↑/↓ moves, multi-line paste splits. Any frontmatter key `plan` uses it; `plot` uses a prose textarea.
+- Theme (Novel Accents): neutral light and dark palettes in `style.css` tokens; `<html data-theme="light|dark">` forces one, otherwise `prefers-color-scheme` decides (System / Light / Dark switch in the sidebar, `theme` in localStorage, applied before first paint by `index.html`). The active novel (route folder, a novel note's folder, or the novel filter on data store pages) sets `--novel-accent` / `--novel-accent-dark`, contrast-adjusted by `readableAccent` to 4.5:1 on `--panel-2`; text on accent backgrounds uses `--on-accent`. Novel page has a colour picker that writes `accent` to config.md. Headings use Newsreader (OFL, vendored at `public/fonts/`).
 - Animations: CSS keyframes for the drawer and page changes, `useFlip()` (Web Animations API) for rows moving on filter/sort/group changes. All honour `prefers-reduced-motion`.
 
 ## Working on this project

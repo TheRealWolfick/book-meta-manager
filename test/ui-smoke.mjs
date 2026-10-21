@@ -219,5 +219,27 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         check(fs.readFileSync(`${COPY}/${plotPath}`, "utf8").includes(`rating: "${target.name === target.title ? `[[${target.name}]]` : `[[${target.name}|${target.title}]]`}"`), "changing a plot's grade saves its rating");
     }
 }
+// theme: light/dark switch and novel accents
+{
+    const doc = w.document, root = doc.documentElement;
+    const novel0 = index.novels.find((n) => n.name === "Sample Novel") ?? index.novels[0];
+    w.location.hash = `#/novel/${enc(novel0.folder)}`;
+    await wait(900);
+    const accent = root.style.getPropertyValue("--novel-accent"), accentDark = root.style.getPropertyValue("--novel-accent-dark");
+    check(/^#[0-9a-f]{6}$/i.test(accent) && /^#[0-9a-f]{6}$/i.test(accentDark) && accent !== accentDark, "a novel page sets its light and dark accent", `${accent} ${accentDark}`);
+    check(doc.querySelector(".sidebar .novel-link.active .name")?.textContent === novel0.name && doc.querySelectorAll(".sidebar .novel-dot").length === index.novels.length, "sidebar shows novel dots and the active novel");
+    const themeBtn = (label) => [...doc.querySelectorAll(".theme-switch button")].find((b) => b.textContent === label);
+    themeBtn("Dark").click(); await wait(100);
+    const dark = root.dataset.theme === "dark" && w.localStorage.getItem("theme") === '"dark"';
+    themeBtn("System").click(); await wait(100);
+    check(dark && !root.dataset.theme && w.localStorage.getItem("theme") === '"system"', "theme switch sets dark and back to system");
+    const picker = doc.querySelector(".novel-colour input[type=color]");
+    picker.value = "#2f6fb0"; picker.dispatchEvent(new w.Event("change", { bubbles: true }));
+    await wait(900);
+    check(fs.readFileSync(`${COPY}/${novel0.folder}/config.md`, "utf8").includes("accent: \"#2f6fb0\""), "novel colour is saved to config.md");
+    w.location.hash = "#/qa";
+    await wait(700);
+    check(!root.style.getPropertyValue("--novel-accent"), "pages outside a novel use the default accent");
+}
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);
