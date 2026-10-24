@@ -2,12 +2,13 @@
   "name": "books-meta-viewer",
   "version": "1.0.0",
   "private": true,
-  "description": "Local web browser and editor for the 80. Global Data Store and novel ledgers",
+  "description": "Local web app for novels in an Obsidian vault: worldbuilding data store, chapter ledgers, plans, world and map builder",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "sh test/run.sh"
+    "test": "sh test/run.sh",
+    "seed": "node scripts/seed.js"
   },
   "dependencies": {
     "htm": "3.1.1",

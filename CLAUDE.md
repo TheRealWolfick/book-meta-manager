@@ -1,6 +1,6 @@
 # Books Meta Viewer — context for future work
 
-Local web app (Node + Preact, no build step) for a novelist's Obsidian vault. It browses and edits a shared worldbuilding database, and manages characters through chapter-based ledgers whose entries are copied into chapters as Obsidian callouts. Built 2026-10-21.
+Local web app (Node + Preact, no build step) for a novelist's Obsidian vault. Notes about one particular vault (not in git) are in `CLAUDE.local.md`. It browses and edits a shared worldbuilding database, and manages characters through chapter-based ledgers whose entries are copied into chapters as Obsidian callouts. Built 2026-10-21.
 
 The user writes several novels in one vault and uses Templater, Dataview and Obsidian Bases. They want structured data they can review in Obsidian, but with richer views and editing than Bases offer. Keep it lightweight: few dependencies, no database, the markdown files are the only source of truth.
 
@@ -9,7 +9,7 @@ The user writes several novels in one vault and uses Templater, Dataview and Obs
 The vault folder is a service setting: `Environment=BOOKS_VAULT=…` in the installed systemd unit (set per device with `scripts/install-service.sh --vault <folder>`), or `--vault <folder>` / `BOOKS_VAULT` when running by hand. There is no built-in default; the server exits with a message when it is missing or not a folder. On this machine it is `~/Documents/Obsidian/books`. It is a git repo backed up by obsidian-git. The app never touches `.obsidian/` or `.git/`; `.trash/` only receives deleted notes.
 
 ```
-1. <Novel>/ … 19. <Novel>/   novels: "<number>. <Name>" (number < 20)
+1. <Novel>/ … 19. <Novel>/                 novels: "<number>. <Name>" (number < 20)
   config.md            novel settings in frontmatter (see below)
   Chapters/            chapter notes `NNN - Title.md` (Templater Chapter template); number from frontmatter `chapter` or the
                        leading number of the file name; fractional chapters exist (048.5). Empty notes are placeholders, not "written"
@@ -27,7 +27,6 @@ The vault folder is a service setting: `Environment=BOOKS_VAULT=…` in the inst
   Scripts/, Templates/ Templater user scripts that share the same conventions
 99. Resources/
 ```
-
 
 ### Data store conventions (do not break these)
 
@@ -134,7 +133,7 @@ ref:: emvhxvxx8ai0          # shared by linked entries in other ledgers
 id:: emvhxvxx8ai0           # stable entry id (written last)
 - [action:: add] [item:: [[Aquanox Sword Art]]] [qty:: 1]
 - [action:: add] [item:: strange bone flute] [qty:: 1]            # misc item: plain text, no data note
-- [action:: transfer-out] [item:: [[steel sword]]] [qty:: 1] [to:: [[Sample Character]]] [ref:: …-3]
+- [action:: transfer-out] [item:: [[steel sword]]] [qty:: 1] [to:: [[Other Character]]] [ref:: …-3]
 - [action:: move] [item:: [[steel]]] [qty:: 250] [unit:: g] [store:: inventory] [to-store:: Apt 412]
 Free text (log ledgers) follows the fields until the next heading.
 ```
@@ -181,6 +180,8 @@ scripts/build-stamps.js  builds public/stamps/manifest.json and the generated st
 lib/plans.js         volumes, chapter plans, plots: overview, create, saveChapterPlan, syncVolumes, describe(note)
 public/outline.js    plan outline parse/serialise (served at /outline.js, imported by the server too)
 public/              index.html (import map), app.js (all views, Preact + htm), style.css (light/dark), fonts/ (Newsreader)
+scripts/seed.js                      seed a vault (schema, ledger types, collection folders, basic taxonomy from seed/; --novel, --world); never overwrites
+scripts/install-service.sh           install/update the systemd user unit with this device's vault folder
 scripts/migrate-plans.js             plan restructure, already run 2026-10-21 (see Plans)
 test/run.sh, test/ui-smoke.mjs       npm test: vault copy + jsdom route render + create-entry flow
 ```

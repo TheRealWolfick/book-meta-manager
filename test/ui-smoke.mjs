@@ -2,6 +2,7 @@
 // ledger entry through the UI. Run via `npm test`, which points it at a throwaway vault copy.
 import { JSDOM } from "jsdom";
 import fs from "node:fs";
+import { parseOutline } from "../public/outline.js";
 
 const BASE = process.env.BASE ?? "http://127.0.0.1:4398";
 const COPY = process.env.VAULT_COPY;
@@ -190,10 +191,17 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
 // planning: grand plan, chapters in the drawer with the outline editor, plots by grade
 {
     const doc = w.document;
-    const novelA = index.novels.find((n) => n.name === "Sample Novel");
-    if (novelA) {
-        const plan = await get(`/api/plan?novel=${enc(novelA.folder)}`);
-        w.location.hash = `#/novel/${enc(novelA.folder)}`;
+    // the first novel in the vault that has a grand plan
+    let planNovel = null, plan = null;
+    // (preferably one with graded plots too)
+    for (const n of index.novels) {
+        const p = await get(`/api/plan?novel=${enc(n.folder)}`);
+        if (!p.volumes?.length) continue;
+        if (!planNovel || (!plan.plots?.length && p.plots?.length)) { planNovel = n; plan = p; }
+        if (p.plots?.length) break;
+    }
+    if (planNovel) {
+        w.location.hash = `#/novel/${enc(planNovel.folder)}`;
         await wait(900);
         const tab = (label) => [...doc.querySelectorAll(".tabs button")].find((b) => b.textContent.trim() === label);
         tab("Grand plan").click();
@@ -202,12 +210,16 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         check(vols.length >= plan.volumes.length && doc.querySelectorAll(".chapter-row").length === plan.chapters.length, "grand plan lists volumes and chapters",
             `${vols.length} volumes, ${doc.querySelectorAll(".chapter-row").length} rows / ${plan.chapters.length}`);
 
-        const row = [...doc.querySelectorAll(".chapter-row")].find((r) => r.querySelector(".badge")?.textContent === "14");
-        row.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-        await wait(900);
-        check(/Chapter 14/.test(doc.querySelector(".drawer h1")?.textContent ?? "") && doc.querySelectorAll(".drawer .plan-row").length > 3, "chapter opens in the drawer with its plan");
-        doc.querySelector(".drawer-head button[title='Collapse']").click();
-        await wait(400);
+        // a chapter with a planned outline of a few events
+        const planned = plan.chapters.find((c) => parseOutline(c.plan ?? "").length > 3);
+        if (planned) {
+            const row = [...doc.querySelectorAll(".chapter-row")].find((r) => r.querySelector(".badge")?.textContent === String(planned.number));
+            row.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+            await wait(900);
+            check(new RegExp(`Chapter ${planned.number}\\b`).test(doc.querySelector(".drawer h1")?.textContent ?? "") && doc.querySelectorAll(".drawer .plan-row").length > 3, "chapter opens in the drawer with its plan");
+            doc.querySelector(".drawer-head button[title='Collapse']").click();
+            await wait(400);
+        }
 
         // plan a new chapter: Enter keeps the level, Tab makes a sub event
         const last = Math.max(...plan.chapters.filter((c) => !c.draft).map((c) => c.number));
@@ -226,7 +238,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         check(rows().length === 3 && doc.querySelectorAll(".drawer .plan-row.lvl-1").length === 2, "outline editor: Enter keeps the indent, Tab indents");
         [...doc.querySelectorAll(".drawer button")].find((b) => b.textContent.trim() === "Save changes").click();
         await wait(1200);
-        const planFile = `${COPY}/${novelA.folder}/Plan/Chapter Plans/Plan ${String(last + 1).padStart(3, "0")} (${novelA.name}).md`;
+        const planFile = `${COPY}/${planNovel.folder}/Plan/Chapter Plans/Plan ${String(last + 1).padStart(3, "0")} (${planNovel.name}).md`;
         const saved = fs.existsSync(planFile) ? fs.readFileSync(planFile, "utf8") : "";
         const vol = plan.volumes.find((v) => last + 1 >= v.start && last + 1 <= (v.end ?? Infinity));
         check(saved.includes("- Smoke event\n  \t- Smoke sub event\n  \t- Second sub") && (!vol || saved.includes(`volume: ${vol.label}`)),
@@ -237,6 +249,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         tab("Plots").click();
         await wait(400);
         const cards = doc.querySelectorAll(".plot-card");
+        if (plan.plots.length && plan.ratings.length > 1) {
         check(cards.length === plan.plots.length && doc.querySelectorAll(".plot-grade h2").length >= plan.ratings.length, "plots are listed by grade", `${cards.length} cards`);
         const sel = cards[0].querySelector("select");
         const target = plan.ratings.find((r) => r.path !== sel.value);
@@ -244,12 +257,13 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         sel.value = target.path; sel.dispatchEvent(new w.Event("change", { bubbles: true }));
         await wait(800);
         check(fs.readFileSync(`${COPY}/${plotPath}`, "utf8").includes(`rating: "${target.name === target.title ? `[[${target.name}]]` : `[[${target.name}|${target.title}]]`}"`), "changing a plot's grade saves its rating");
+        }
     }
 }
 // theme: light/dark switch and novel accents
 {
     const doc = w.document, root = doc.documentElement;
-    const novel0 = index.novels.find((n) => n.name === "Sample Novel") ?? index.novels[0];
+    const novel0 = index.novels[0];
     w.location.hash = `#/novel/${enc(novel0.folder)}`;
     await wait(900);
     const accent = root.style.getPropertyValue("--novel-accent"), accentDark = root.style.getPropertyValue("--novel-accent-dark");
@@ -271,13 +285,14 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
 // stats: build a template in the editor, assign it, save a Stats entry through the prefilled form
 {
     const doc = w.document;
-    const novelA = index.novels.find((n) => n.name === "Sample Novel");
-    if (novelA) {
+    let statNovel = null, hero = null;
+    for (const n of index.novels) { const d = await get(`/api/novel?folder=${enc(n.folder)}`); if (d.characters?.length) { statNovel = n; hero = d.characters[0].name; break; } }
+    if (statNovel) {
         const fire = (el, type) => el.dispatchEvent(new w.Event(type, { bubbles: true }));
         const setVal = (el, v, type = "input") => { el.value = v; fire(el, type); };
         const btn = (label, root = doc) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
         globalThis.prompt = () => "Hero";
-        w.location.hash = `#/novel/${enc(novelA.folder)}`;
+        w.location.hash = `#/novel/${enc(statNovel.folder)}`;
         await wait(900);
         [...doc.querySelectorAll(".tabs button")].find((b) => b.textContent.trim() === "Stats").click();
         await wait(900);
@@ -292,18 +307,18 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         rows()[0].querySelector("input[type=checkbox]").click(); await wait(50); // whole numbers
         btn("Save templates").click();
         await wait(1200);
-        const cfg = fs.readFileSync(`${COPY}/${novelA.folder}/config.md`, "utf8");
+        const cfg = fs.readFileSync(`${COPY}/${statNovel.folder}/config.md`, "utf8");
         check(/stat-templates:\s*\n\s+Hero:/.test(cfg) && cfg.includes("key: stats/level") && cfg.includes("formula: level * 10") && cfg.includes("integer: true"), "template editor saves to config.md", cfg.slice(cfg.indexOf("stat-templates"), cfg.indexOf("stat-templates") + 300));
 
         // jsdom gets no live updates: reopen the tab to load the saved templates
         w.location.hash = "#/qa"; await wait(500);
-        w.location.hash = `#/novel/${enc(novelA.folder)}`; await wait(1200);
-        const heroRow = [...doc.querySelectorAll(".templates-editor ~ div tr, .grid2 tr")].find((tr) => tr.textContent.includes("Sample Character"));
+        w.location.hash = `#/novel/${enc(statNovel.folder)}`; await wait(1200);
+        const heroRow = [...doc.querySelectorAll(".templates-editor ~ div tr, .grid2 tr")].find((tr) => tr.textContent.includes(hero));
         setVal(heroRow.querySelector("select"), "Hero", "change");
         await wait(1000);
-        check(fs.readFileSync(`${COPY}/${novelA.folder}/Characters/Sample Character.md`, "utf8").includes("stat-template: Hero"), "assigning a template writes stat-template");
+        check(fs.readFileSync(`${COPY}/${statNovel.folder}/Characters/${hero}.md`, "utf8").includes("stat-template: Hero"), "assigning a template writes stat-template");
 
-        w.location.hash = `#/entry/${enc(novelA.folder)}?owner=${enc("Sample Character")}&type=Stats&chapter=20`;
+        w.location.hash = `#/entry/${enc(statNovel.folder)}?owner=${enc(hero)}&type=Stats&chapter=20`;
         await wait(1500);
         const levelLabel = [...doc.querySelectorAll(".stat-lines label")].find((l) => l.textContent === "Level");
         const levelInput = levelLabel?.nextElementSibling.querySelector("input");
@@ -312,9 +327,9 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         setVal([...doc.querySelectorAll("input")].find((x) => (x.getAttribute("placeholder") ?? "").startsWith("Short summary")), "Level up"); await wait(500);
         btn("Save").click();
         await wait(1500);
-        const ledger = fs.readFileSync(`${COPY}/${novelA.folder}/Ledgers/Sample Character - Stats.md`, "utf8");
+        const ledger = fs.readFileSync(`${COPY}/${statNovel.folder}/Ledgers/${hero} - Stats.md`, "utf8");
         check(ledger.includes("[set:: stats/level] [value:: 4]") && !ledger.includes("stats/power"), "only changed stats become ledger lines", ledger.slice(-300));
-        w.location.hash = `#/owner/${enc(novelA.folder)}/${enc("Sample Character")}`;
+        w.location.hash = `#/owner/${enc(statNovel.folder)}/${enc(hero)}`;
         await wait(1500);
         const panel = doc.querySelector(".stats-panel")?.textContent ?? "";
         check(/Power\s*40/.test(panel.replace(/\s+/g, " ")) || panel.includes("Power: 40") || /Power.{0,20}40/.test(panel), "owner page shows the stats panel with computed values", panel.slice(0, 200));
@@ -326,14 +341,24 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
     const fireEv = (el, type, init = {}) => el.dispatchEvent(new w.MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
     const button = (label, root = doc) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
     const L = "80. Global Data Store/Locations";
-    const novelAWorld = (await get("/api/worlds")).worlds.find((x) => x.name === "Sample World");
-    if (novelAWorld) {
+    // a made-up world in the vault copy: Smoke Region > Smoke Kingdom > Smoke Town, and Other Kingdom
+    const post = (p, body) => realFetch(new URL(p, BASE), { method: "POST", headers: { "x-requested-with": "books-meta-viewer", "content-type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+    const worldPath = (await post("/api/note", { collection: "Worlds", name: "Smoke World", fm: {} })).path;
+    const region = (await post("/api/world/location", { world: worldPath, parent: null, name: "Smoke Region", scale: "region" })).path;
+    const kingdom = (await post("/api/world/location", { world: worldPath, parent: region, name: "Smoke Kingdom", scale: "nation" })).path;
+    await post("/api/world/location", { world: worldPath, parent: region, name: "Other Kingdom", scale: "nation" });
+    const town = (await post("/api/world/location", { world: worldPath, parent: kingdom, name: "Smoke Town", scale: "town" })).path;
+    const smokeWorld = (await get("/api/worlds")).worlds.find((x) => x.path === worldPath);
+    if (smokeWorld && town) {
         w.location.hash = "#/world";
+        await wait(1200);
+        check(w.location.hash.startsWith("#/world/"), "the world builder opens a world");
+        w.location.hash = `#/world/${enc(worldPath)}`;
         await wait(1500);
         const rows = () => [...doc.querySelectorAll(".loc-row[role=treeitem]")];
-        check(w.location.hash.startsWith("#/world/") && rows().length === novelAWorld.count, "world builder lists the world's locations", `${w.location.hash} ${rows().length} vs ${novelAWorld.count}`);
-        const town = rows().find((r) => r.querySelector(".t")?.textContent === "Sample Town");
-        town.querySelector("[aria-label='Add a sub-location to Sample Town']").click();
+        check(rows().length === smokeWorld.count && smokeWorld.count === 4, "world builder lists the world's locations", `${rows().length} vs ${smokeWorld.count}`);
+        const townRow = rows().find((r) => r.querySelector(".t")?.textContent === "Smoke Town");
+        townRow.querySelector("[aria-label='Add a sub-location to Smoke Town']").click();
         await wait(300);
         const input = doc.querySelector(".add-row input");
         input.value = "Smoke Square"; input.dispatchEvent(new w.Event("input", { bubbles: true }));
@@ -341,18 +366,18 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
         await wait(1200);
         const sq = fs.readFileSync(`${COPY}/${L}/Smoke Square.md`, "utf8");
-        check(sq.includes('parent: "[[Sample Town]]"') && sq.includes('world: "[[Sample World]]"') && sq.includes('scale: "[[village]]"'), "adding a sub-location writes parent, world and the next scale", sq.slice(0, 300));
-        w.location.hash = "#/qa"; await wait(400); w.location.hash = `#/world/${enc(novelAWorld.path)}`; await wait(1500);
+        check(sq.includes('parent: "[[Smoke Town]]"') && sq.includes('world: "[[Smoke World]]"') && sq.includes('scale: "[[village]]"'), "adding a sub-location writes parent, world and the next scale", sq.slice(0, 300));
+        w.location.hash = "#/qa"; await wait(400); w.location.hash = `#/world/${enc(worldPath)}`; await wait(1500);
         rows().find((r) => r.querySelector(".t")?.textContent === "Smoke Square").querySelector("[aria-label='Move Smoke Square']").click();
         await wait(300);
-        [...doc.querySelectorAll(".move-list button")].find((b) => b.querySelector("b")?.textContent === "Sample Kingdom").click();
+        [...doc.querySelectorAll(".move-list button")].find((b) => b.querySelector("b")?.textContent === "Other Kingdom").click();
         await wait(100);
         button("Move", doc.querySelector(".modal")).click();
         await wait(1200);
-        check(fs.readFileSync(`${COPY}/${L}/Smoke Square.md`, "utf8").includes('parent: "[[Sample Kingdom]]"'), "Move to… changes the parent");
+        check(fs.readFileSync(`${COPY}/${L}/Smoke Square.md`, "utf8").includes('parent: "[[Other Kingdom]]"'), "Move to… changes the parent");
 
         // map editor
-        w.location.hash = `#/map/${enc(`${L}/Sample Town.md`)}`;
+        w.location.hash = `#/map/${enc(town)}`;
         await wait(1200);
         [...doc.querySelectorAll(".kind-pick button")].find((b) => b.textContent.includes("Square grid")).click();
         await wait(100);
@@ -401,7 +426,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "g", ctrlKey: true, bubbles: true })); await wait(200);
         const saveNow = async () => { w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true })); await wait(1200); };
         await saveNow();
-        const mapFile = `${COPY}/80. Global Data Store/_Attachments/Maps/Sample Town (Map).svg`;
+        const mapFile = `${COPY}/80. Global Data Store/_Attachments/Maps/Smoke Town (Map).svg`;
         const roomsOf = () => JSON.parse(fs.readFileSync(mapFile, "utf8").match(/<!\[CDATA\[([\s\S]*?)\]\]><\/metadata>/)[1]).layers[0].objects.filter((o) => o.type === "room");
         const before = roomsOf();
         fireEv(roomEls()[1], "pointerdown", at(300, 600)); fireEv(svg, "pointermove", at(360, 600)); fireEv(svg, "pointerup", at(360, 600)); await wait(200);
@@ -430,7 +455,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         button("Only this layer", doc.querySelector(".layers-panel")).click(); await wait(200);
         button("Save").click();
         await wait(1500);
-        const file = `${COPY}/80. Global Data Store/_Attachments/Maps/Sample Town (Map).svg`;
+        const file = `${COPY}/80. Global Data Store/_Attachments/Maps/Smoke Town (Map).svg`;
         const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
         const m = text.match(/<!\[CDATA\[([\s\S]*?)\]\]><\/metadata>/);
         const saved = m ? JSON.parse(m[1]) : null;
@@ -450,7 +475,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         check(!!room && room.children?.some((c) => c.src?.includes("crate")) && !ground.objects.some((o) => o.src?.includes("crate")), "a room holds the stamp placed inside it", JSON.stringify(room)?.slice(0, 300));
         check(ground?.objects.some((o) => o.type === "ribbon" && o.style === "railway" && o.pts.length === 3) && saved.snap === false, "a curved railway strip is saved and snapping can be turned off", JSON.stringify(ground?.objects.filter((o) => o.type === "ribbon")) + " snap=" + saved.snap);
         check(!ground?.floor["0,0"] || Object.keys(ground.floor).length >= 1, "erase floor tool runs");
-        check(text.includes("data:image/svg+xml;base64,") && fs.readFileSync(`${COPY}/${L}/Sample Town.md`, "utf8").includes('map: "[[Sample Town (Map).svg]]"'), "the saved SVG embeds its stamps and the location links it");
+        check(text.includes("data:image/svg+xml;base64,") && fs.readFileSync(`${COPY}/${town}`, "utf8").includes('map: "[[Smoke Town (Map).svg]]"'), "the saved SVG embeds its stamps and the location links it");
     }
 }
 // sidebar sections collapse on their heading and remember it

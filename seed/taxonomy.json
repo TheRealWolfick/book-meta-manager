@@ -1,0 +1,769 @@
+{
+ "Rarity": {
+  "type": "rarity",
+  "ordered": true,
+  "values": [
+   {
+    "title": "common",
+    "class": 1,
+    "description": "The most standard of items"
+   },
+   {
+    "title": "uncommon",
+    "class": 2,
+    "description": "Items that exceed the ordinary in both value and quality"
+   },
+   {
+    "title": "rare",
+    "class": 3,
+    "description": "Items of high value and exceptional quality"
+   },
+   {
+    "title": "unique",
+    "class": 4,
+    "description": "An item that stands out in this world as unique. It's unique presence in the world gives it strength and durability beyond what science can dictate"
+   },
+   {
+    "title": "epic",
+    "class": 5,
+    "description": "A unique item that is imbued with a tale, further enhancing it."
+   },
+   {
+    "title": "legendary",
+    "class": 6,
+    "description": "A unique item that holds its place in legends"
+   }
+  ]
+ },
+ "Item Condition": {
+  "type": "condition-rating",
+  "ordered": true,
+  "values": [
+   {
+    "title": "Broken",
+    "class": 1,
+    "description": "The item is no longer functional or has otherwise been broken"
+   },
+   {
+    "title": "Bad",
+    "class": 2,
+    "description": "The item is worn and has visible signs of damage. It may break or stop working at any time"
+   },
+   {
+    "title": "Good",
+    "class": 3,
+    "description": "There are visible signs of the item being worn or light damage, but the item is still in a functional state"
+   },
+   {
+    "title": "Excellent",
+    "class": 4,
+    "description": "There are some light signs of wear, but the item still functions in an a manner at or close to as new"
+   },
+   {
+    "title": "New",
+    "class": 5,
+    "description": "The item is in a brand new, or as new state."
+   }
+  ]
+ },
+ "Rating": {
+  "type": "rating",
+  "ordered": true,
+  "values": [
+   {
+    "title": "Terrible",
+    "class": -2,
+    "description": "Terrible"
+   },
+   {
+    "title": "Poor",
+    "class": -1,
+    "description": "Not very good"
+   },
+   {
+    "title": "Average",
+    "class": 0,
+    "description": "Neither good nor bad"
+   },
+   {
+    "title": "Good",
+    "class": 1,
+    "description": "Decently good"
+   },
+   {
+    "title": "Excellent",
+    "class": 2,
+    "description": "An ideal grade that does not need excessive improvement"
+   }
+  ]
+ },
+ "Location Scales": {
+  "type": "location-scale",
+  "ordered": true,
+  "values": [
+   {
+    "title": "realm",
+    "class": 1,
+    "description": "A whole plane or dimension, e.g. a mortal realm or a heaven."
+   },
+   {
+    "title": "continent",
+    "class": 2,
+    "description": "A continent or great division of a realm."
+   },
+   {
+    "title": "region",
+    "class": 3,
+    "description": "A large geographic region containing several polities."
+   },
+   {
+    "title": "multinational",
+    "class": 4,
+    "description": "An empire, alliance or coalition spanning several nations."
+   },
+   {
+    "title": "nation",
+    "class": 5,
+    "description": "A kingdom, dukedom, dynasty or other sovereign state."
+   },
+   {
+    "title": "province",
+    "class": 6,
+    "description": "A province, county or state within a nation."
+   },
+   {
+    "title": "city",
+    "class": 7,
+    "description": "A large urban settlement."
+   },
+   {
+    "title": "town",
+    "class": 8,
+    "description": "A town or township."
+   },
+   {
+    "title": "village",
+    "class": 9,
+    "description": "A village or hamlet."
+   },
+   {
+    "title": "district",
+    "class": 10,
+    "description": "A district, suburb or quarter of a settlement."
+   },
+   {
+    "title": "estate",
+    "class": 11,
+    "description": "A compound, clan grounds, sect mountain or campus."
+   },
+   {
+    "title": "building",
+    "class": 12,
+    "description": "A single building or hall."
+   },
+   {
+    "title": "room",
+    "class": 13,
+    "description": "A room or chamber."
+   }
+  ]
+ },
+ "Units": {
+  "type": "unit",
+  "ordered": false,
+  "values": [
+   {
+    "title": "Kg",
+    "description": "Metric kilogram (1000 grams)"
+   },
+   {
+    "title": "T",
+    "description": "Metric tonne (1000Kg)"
+   },
+   {
+    "title": "g",
+    "description": "Metric gram"
+   }
+  ]
+ },
+ "Genres": {
+  "type": "genre",
+  "values": [
+   {
+    "title": "Cyberpunk"
+   },
+   {
+    "title": "Eastern Cultivation"
+   },
+   {
+    "title": "LitRPG"
+   },
+   {
+    "title": "Looter Shooter"
+   },
+   {
+    "title": "Modern"
+   },
+   {
+    "title": "Multiverse"
+   },
+   {
+    "title": "Mythology"
+   },
+   {
+    "title": "Occult"
+   },
+   {
+    "title": "Post-Apocalyptic"
+   },
+   {
+    "title": "Science Fiction"
+   },
+   {
+    "title": "Space Opera"
+   },
+   {
+    "title": "Steampunk"
+   },
+   {
+    "title": "Urban Fantasy"
+   },
+   {
+    "title": "Western Fantasy"
+   }
+  ]
+ },
+ "Elements": {
+  "type": "element",
+  "values": [
+   {
+    "title": "chaos"
+   },
+   {
+    "title": "darkness"
+   },
+   {
+    "title": "death"
+   },
+   {
+    "title": "earth"
+   },
+   {
+    "title": "fire"
+   },
+   {
+    "title": "ice"
+   },
+   {
+    "title": "life"
+   },
+   {
+    "title": "light"
+   },
+   {
+    "title": "lightning"
+   },
+   {
+    "title": "metal"
+   },
+   {
+    "title": "poison"
+   },
+   {
+    "title": "space"
+   },
+   {
+    "title": "time"
+   },
+   {
+    "title": "water"
+   },
+   {
+    "title": "wind"
+   },
+   {
+    "title": "wood"
+   }
+  ]
+ },
+ "Energy Sources": {
+  "type": "energy-source",
+  "values": [
+   {
+    "title": "biomass"
+   },
+   {
+    "title": "chaos energy"
+   },
+   {
+    "title": "clockwork"
+   },
+   {
+    "title": "combustion fuel"
+   },
+   {
+    "title": "demonic qi"
+   },
+   {
+    "title": "divine power"
+   },
+   {
+    "title": "electricity"
+   },
+   {
+    "title": "ether"
+   },
+   {
+    "title": "ley energy"
+   },
+   {
+    "title": "mana"
+   },
+   {
+    "title": "nuclear"
+   },
+   {
+    "title": "psionic energy"
+   },
+   {
+    "title": "solar"
+   },
+   {
+    "title": "soul force"
+   },
+   {
+    "title": "spiritual qi"
+   },
+   {
+    "title": "steam pressure"
+   }
+  ]
+ },
+ "Traditions": {
+  "type": "tradition",
+  "values": [
+   {
+    "title": "Abrahamic"
+   },
+   {
+    "title": "Arabian"
+   },
+   {
+    "title": "Celtic"
+   },
+   {
+    "title": "Chinese"
+   },
+   {
+    "title": "Egyptian"
+   },
+   {
+    "title": "European Folklore"
+   },
+   {
+    "title": "Greek"
+   },
+   {
+    "title": "Hindu"
+   },
+   {
+    "title": "Japanese"
+   },
+   {
+    "title": "Korean"
+   },
+   {
+    "title": "Norse"
+   },
+   {
+    "title": "Slavic"
+   }
+  ]
+ },
+ "Material Categories": {
+  "type": "material-category",
+  "values": [
+   {
+    "title": "alloys"
+   },
+   {
+    "title": "beast parts"
+   },
+   {
+    "title": "chemicals"
+   },
+   {
+    "title": "electronic components"
+   },
+   {
+    "title": "energy crystals"
+   },
+   {
+    "title": "exotic matter"
+   },
+   {
+    "title": "fabrics"
+   },
+   {
+    "title": "fuels"
+   },
+   {
+    "title": "gems"
+   },
+   {
+    "title": "herbs"
+   },
+   {
+    "title": "inks"
+   },
+   {
+    "title": "liquids"
+   },
+   {
+    "title": "metals"
+   },
+   {
+    "title": "minerals"
+   },
+   {
+    "title": "spirit materials"
+   },
+   {
+    "title": "synthetics"
+   },
+   {
+    "title": "woods"
+   }
+  ]
+ },
+ "Creature Categories": {
+  "type": "creature-category",
+  "values": [
+   {
+    "title": "alien"
+   },
+   {
+    "title": "beast"
+   },
+   {
+    "title": "construct"
+   },
+   {
+    "title": "cryptid"
+   },
+   {
+    "title": "dragon"
+   },
+   {
+    "title": "goblinoid"
+   },
+   {
+    "title": "livestock"
+   },
+   {
+    "title": "monster"
+   },
+   {
+    "title": "mutant"
+   },
+   {
+    "title": "spirit"
+   },
+   {
+    "title": "spirit beast"
+   },
+   {
+    "title": "undead"
+   }
+  ]
+ },
+ "Ability Categories": {
+  "type": "ability-category",
+  "values": [
+   {
+    "title": "attack"
+   },
+   {
+    "title": "augmentation"
+   },
+   {
+    "title": "concealment"
+   },
+   {
+    "title": "control"
+   },
+   {
+    "title": "crafting"
+   },
+   {
+    "title": "cultivation method"
+   },
+   {
+    "title": "defense"
+   },
+   {
+    "title": "detection"
+   },
+   {
+    "title": "formation"
+   },
+   {
+    "title": "healing"
+   },
+   {
+    "title": "movement"
+   },
+   {
+    "title": "psionic power"
+   },
+   {
+    "title": "ritual"
+   },
+   {
+    "title": "sealing"
+   },
+   {
+    "title": "skill"
+   },
+   {
+    "title": "spell"
+   },
+   {
+    "title": "summoning"
+   },
+   {
+    "title": "superpower"
+   },
+   {
+    "title": "support"
+   },
+   {
+    "title": "sword art"
+   },
+   {
+    "title": "system class"
+   },
+   {
+    "title": "technique"
+   },
+   {
+    "title": "utility"
+   }
+  ]
+ },
+ "Recipe Categories": {
+  "type": "recipe-category",
+  "values": [
+   {
+    "title": "forging plan"
+   },
+   {
+    "title": "pill recipe"
+   },
+   {
+    "title": "potion recipe"
+   },
+   {
+    "title": "tech blueprint"
+   }
+  ]
+ },
+ "Faction Types": {
+  "type": "faction-type",
+  "values": [
+   {
+    "title": "alchemist association"
+   },
+   {
+    "title": "alliance"
+   },
+   {
+    "title": "clan"
+   },
+   {
+    "title": "corporate subsidiary"
+   },
+   {
+    "title": "cult"
+   },
+   {
+    "title": "government agency"
+   },
+   {
+    "title": "guild"
+   },
+   {
+    "title": "imperial dynasty"
+   },
+   {
+    "title": "megacorp"
+   },
+   {
+    "title": "noble house"
+   },
+   {
+    "title": "sect"
+   },
+   {
+    "title": "tribal coalition"
+   }
+  ]
+ },
+ "Location Types": {
+  "type": "location-type",
+  "values": [
+   {
+    "title": "academy"
+   },
+   {
+    "title": "castle"
+   },
+   {
+    "title": "farm"
+   },
+   {
+    "title": "forest"
+   },
+   {
+    "title": "guild hall"
+   },
+   {
+    "title": "harbour"
+   },
+   {
+    "title": "industrial zone"
+   },
+   {
+    "title": "library"
+   },
+   {
+    "title": "market"
+   },
+   {
+    "title": "metropolis"
+   },
+   {
+    "title": "mine"
+   },
+   {
+    "title": "mountain range"
+   },
+   {
+    "title": "ruins"
+   },
+   {
+    "title": "suburb"
+   },
+   {
+    "title": "temple"
+   },
+   {
+    "title": "tundra"
+   },
+   {
+    "title": "wilderness"
+   }
+  ]
+ },
+ "Item Categories": {
+  "type": "item-category",
+  "values": [
+   {
+    "title": "accessory"
+   },
+   {
+    "title": "ammunition"
+   },
+   {
+    "title": "armor"
+   },
+   {
+    "title": "artifact"
+   },
+   {
+    "title": "book"
+   },
+   {
+    "title": "bow"
+   },
+   {
+    "title": "clothing"
+   },
+   {
+    "title": "component"
+   },
+   {
+    "title": "consumable"
+   },
+   {
+    "title": "container"
+   },
+   {
+    "title": "crafting tool"
+   },
+   {
+    "title": "currency"
+   },
+   {
+    "title": "dagger"
+   },
+   {
+    "title": "document"
+   },
+   {
+    "title": "drink"
+   },
+   {
+    "title": "elixir"
+   },
+   {
+    "title": "explosive"
+   },
+   {
+    "title": "firearm"
+   },
+   {
+    "title": "food"
+   },
+   {
+    "title": "gem"
+   },
+   {
+    "title": "instrument"
+   },
+   {
+    "title": "jewellery"
+   },
+   {
+    "title": "key"
+   },
+   {
+    "title": "material"
+   },
+   {
+    "title": "potion"
+   },
+   {
+    "title": "ring"
+   },
+   {
+    "title": "shield"
+   },
+   {
+    "title": "staff"
+   },
+   {
+    "title": "sword"
+   },
+   {
+    "title": "tool"
+   },
+   {
+    "title": "vehicle"
+   },
+   {
+    "title": "weapon"
+   }
+  ]
+ }
+}
