@@ -7,7 +7,7 @@
 // an <img>) and hands them over as bitmaps. Without workers or OffscreenCanvas everything is painted here instead.
 import {
     CELL, TILE_PX, SHEET, spriteSheetSvg, textureLayerSvg, continuousPeriod, squarePicker, macroBlobs, MACRO_ALPHA, patchStrength,
-    roomExtent, roomOutline, PATH_STYLES, ribbonPieces,
+    roomExtent, roomOutline, roomWalls, isWallShape, PATH_STYLES, ribbonPieces,
 } from "./map-core.js";
 
 const IN_PAGE = typeof document !== "undefined";
@@ -141,9 +141,8 @@ export function roomTiles(o, scale) {
 /** One tile {x, y, w, h} of a room's base (floor, painted squares, grid, walls with openings) at `scale` */
 export function drawRoomTile(o, custom, scale, { x: tx, y: ty, w, h }, sp) {
     const { e, wall, ww, box } = roomBox(o);
-    const shaped = (o.shapes ?? []).some((sh) => sh.op !== "open");
+    const shaped = (o.shapes ?? []).some((sh) => !isWallShape(sh));
     const outline = new Path2D(shaped ? roomOutline(o).d : `M0 0H${o.w}V${o.h}H0Z`);
-    const opens = (o.shapes ?? []).filter((sh) => sh.op === "open");
     const B = o.box ?? CELL;
     const pick = squarePicker(custom);
     const [cv, ctx] = newCanvas(Math.ceil(w * scale), Math.ceil(h * scale));
@@ -164,21 +163,22 @@ export function drawRoomTile(o, custom, scale, { x: tx, y: ty, w, h }, sp) {
         ctx.strokeStyle = "rgba(0,0,0,.28)"; ctx.lineWidth = 1; ctx.stroke();
     }
     ctx.restore();
-    // walls along the outline, with gaps where openings are
+    // walls along the outline, left out where openings are
     if (wall) {
+        const { paths, loose } = roomWalls(o, wall);
         ctx.save();
-        if (opens.length) {
+        // openings that no longer sit on a wall: one clip per gap (clips intersect)
+        for (const sh of loose) {
             const p = new Path2D();
             p.rect(box.x - ww, box.y - ww, box.w + ww * 2, box.h + ww * 2);
-            for (const sh of opens) {
-                const a = ((sh.rot ?? 0) * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
-                const pts = [[-sh.len / 2, -sh.thick / 2], [sh.len / 2, -sh.thick / 2], [sh.len / 2, sh.thick / 2], [-sh.len / 2, sh.thick / 2]].map(([u, v]) => [sh.cx + u * cos - v * sin, sh.cy + u * sin + v * cos]);
-                p.moveTo(...pts[0]); for (const q of pts.slice(1)) p.lineTo(...q); p.closePath();
-            }
+            const a = ((sh.rot ?? 0) * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
+            const pts = [[-sh.len / 2, -sh.thick / 2], [sh.len / 2, -sh.thick / 2], [sh.len / 2, sh.thick / 2], [-sh.len / 2, sh.thick / 2]].map(([u, v]) => [sh.cx + u * cos - v * sin, sh.cy + u * sin + v * cos]);
+            p.moveTo(...pts[0]); for (const q of pts.slice(1)) p.lineTo(...q); p.closePath();
             ctx.clip(p, "evenodd");
         }
         ctx.lineJoin = "miter"; ctx.lineCap = "butt";
-        for (const l of wall.layers) { ctx.lineWidth = l.w; ctx.strokeStyle = l.c; ctx.setLineDash(dashOf(l.dash)); ctx.stroke(outline); }
+        wall.layers.forEach((l, j) => { if (!paths[j]) return; ctx.lineWidth = l.w; ctx.strokeStyle = l.c; ctx.globalAlpha = l.opacity ?? 1; ctx.setLineDash(dashOf(l.dash)); ctx.stroke(new Path2D(paths[j])); });
+        ctx.globalAlpha = 1;
         ctx.restore();
     }
     return cv;

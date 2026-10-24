@@ -521,7 +521,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         const pipes = ground?.objects.filter((o) => o.src?.includes("pipe-copper-straight")) ?? [];
         check(pipes.length === 2 && Math.abs(Math.abs(pipes[1].x - pipes[0].x) - 64) < 0.01 && Math.abs(pipes[1].y - pipes[0].y) < 0.01, "a pipe placed near another snaps end to end", JSON.stringify(pipes.map((x) => [x.x, x.y])));
         const room = ground?.objects.find((o) => o.type === "room");
-        check(room?.shapes?.some((x) => x.op === "add" && x.shape === "rect") && room.shapes.some((x) => x.op === "open") && room.children?.some((c) => c.src?.includes("/door-swing.svg")),
+        check(room?.shapes?.some((x) => x.op === "add" && x.shape === "rect") && room.shapes.some((x) => x.op === "open") && room.children?.some((c) => c.name === "door" && c.src?.startsWith("data:image/svg+xml")),
             "a room grows with an added box and gets a door in its wall", JSON.stringify(room?.shapes));
         check(!!room && room.children?.some((c) => c.src?.includes("crate")) && !ground.objects.some((o) => o.src?.includes("crate")), "a room holds the stamp placed inside it", JSON.stringify(room)?.slice(0, 300));
         check(ground?.objects.some((o) => o.type === "ribbon" && o.style === "railway" && o.pts.length === 3) && saved.snap === false, "a curved railway strip is saved and snapping can be turned off", JSON.stringify(ground?.objects.filter((o) => o.type === "ribbon")) + " snap=" + saved.snap);

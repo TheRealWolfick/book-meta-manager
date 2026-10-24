@@ -74,6 +74,10 @@ const STRUCTURES = {
     joints: (r, c) => `<path d="M0 0H64V64" stroke="${c(c.line)}" stroke-width="1.4" fill="none"/>`,
     marble: (r, c) => `<rect width="32" height="32" fill="${c(c.dark)}"/><rect x="32" y="32" width="32" height="32" fill="${c(c.dark)}"/><path d="M${n1(r() * 30)} ${n1(r() * 30)}q${n1(r() * 20)} ${n1(r() * 20)} ${n1(10 + r() * 20)} ${n1(r() * 10)}M${n1(34 + r() * 28)} ${n1(r() * 30)}l${n1(r() * 10 - 5)} ${n1(10 + r() * 14)}" stroke="${c(c.line)}" stroke-width=".8" fill="none" opacity=".7"/>`,
     carpet: (r, c) => `<path d="M32 8L56 32L32 56L8 32Z" fill="none" stroke="${c(c.line)}" stroke-width="2"/><circle cx="32" cy="32" r="4" fill="${c(c.accent)}"/>`,
+    // carpets: fine, low-contrast weaves that line up across square edges
+    loop: (r, c) => `<path d="${Array.from({ length: 16 }, (_, i) => `M${i % 2 ? 2 : 0} ${i * 4 + 2}H64`).join("")}" stroke="${c(c.line)}" stroke-width="1.6" stroke-dasharray="2 2" opacity=".5"/>`,
+    ribbed: (r, c) => `<path d="${Array.from({ length: 16 }, (_, i) => `M${i * 4 + 1} 0V64`).join("")}" stroke="${c(c.line)}" stroke-width="1.4" opacity=".45"/>`,
+    "carpet-tiles": (r, c) => `<rect width="64" height="64" fill="${c(c.base, r() * 0.06 - 0.03)}"/><path d="${r() < 0.5 ? Array.from({ length: 8 }, (_, i) => `M2 ${i * 8 + 4}H62`).join("") : Array.from({ length: 8 }, (_, i) => `M${i * 8 + 4} 2V62`).join("")}" stroke="${c(c.base, 0.035)}" stroke-width="3" opacity=".45"/><path d="M0 0H64V64" stroke="${c(c.line)}" stroke-width=".8" fill="none" opacity=".7"/>`,
     plate: (r, c) => { let s = ""; for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) s += `<path d="M${x * 16 + 4 + (y % 2) * 8} ${y * 16 + 10}l6 -6" stroke="${c(c.line, 0.12)}" stroke-width="2.4" stroke-linecap="round"/>`; return s + `<path d="M0 0H64V64" stroke="${c(c.line, -0.12)}" stroke-width="1.5" fill="none"/>`; },
     grating: (r, c) => `<path d="M0 8H64M0 24H64M0 40H64M0 56H64M8 0V64M24 0V64M40 0V64M56 0V64" stroke="${c(c.line)}" stroke-width="3"/>`,
     furrows: (r, c) => `<path d="M0 6H64M0 18H64M0 30H64M0 42H64M0 54H64" stroke="${c(c.line)}" stroke-width="3"/>`,
@@ -224,6 +228,7 @@ export const DETAILS = {
     ripples: { name: "Ripples", max: 10, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), w = (6 + r() * 6) * S; return `<path d="M${x} ${y}q${n1(w / 2)} ${n1(-4 * S)} ${n1(w)} 0t${n1(w)} 0" stroke="${c(col, J(r, 0.05, V))}" stroke-width="1.4" fill="none" stroke-linecap="round"/>`; }).join("") },
     sparkle: { name: "Sparkle", max: 20, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r); return `<circle cx="${x}" cy="${y}" r="${n1((0.6 + r() * 1) * S)}" fill="${c(col, J(r, 0.03, V))}"/>`; }).join("") },
     glow: { name: "Glowing cracks", max: 6, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { let [x, y] = P(r); let d = `M${x} ${y}`; for (let i = 0; i < 5; i++) { x = n1(x + (r() * 12 - 6) * S); y = n1(y + (r() * 12 - 6) * S); d += `L${x} ${y}`; } return `<path d="${d}" stroke="${c(col, J(r, 0.05, V))}" stroke-width="${n1(1.5 + r() * 1.5)}" fill="none" stroke-linecap="round"/>`; }).join("") },
+    pile: { name: "Carpet pile", max: 160, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), a = r() * Math.PI * 2, l = (0.8 + r() * 1.4) * S; return `<path d="M${x} ${y}l${n1(Math.cos(a) * l)} ${n1(Math.sin(a) * l)}" stroke="${c(col, J(r, 0.05, V))}" stroke-width=".8" stroke-linecap="round" opacity=".55"/>`; }).join("") },
     straw: { name: "Straw", max: 120, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), l = (6 + r() * 8) * S, a = 1.3 + (r() - 0.5) * 0.5; return `<path d="M${x} ${y}l${n1(Math.cos(a) * l)} ${n1(Math.sin(a) * l)}" stroke="${c(col, J(r, 0.09, V))}" stroke-width="${n1(0.8 + r() * 0.5)}" stroke-linecap="round"/>`; }).join("") },
     "map-trees": { name: "Tiny trees", max: 16, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r); return `<path d="M${x} ${n1(y - 7 * S)}l${n1(5 * S)} ${n1(9 * S)}h${n1(-10 * S)}z" fill="${c(col, J(r, 0.05, V))}" stroke="${c(col, -0.15)}" stroke-width="1"/><path d="M${x} ${n1(y + 2 * S)}v${n1(3 * S)}" stroke="#5e4b33" stroke-width="1.2"/>`; }).join("") },
     "map-hills": { name: "Tiny hills", max: 8, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), w = (6 + r() * 6) * S; return `<path d="M${x} ${y}q${n1(w)} -${n1(w * 1.4)} ${n1(w * 2)} 0" stroke="${c(col, J(r, 0.05, V))}" stroke-width="1.6" fill="none"/>`; }).join("") },
@@ -260,8 +265,27 @@ export const TEXTURES = {
     parquet: { name: "Parquet", group: "Indoor", color: "#a8743f", structure: "parquet", line: "#7f5326", vary: 0.3, details: [["scratches", 0.4, "#7f5326"]] },
     "stone-tiles": { name: "Stone tiles", group: "Indoor", color: "#b3ada2", structure: "tiles", line: "#8d877c", vary: 0.25, details: [["speckle", 6, "#c2bcb0"], ["stains", 0.3, "#9a9488"], ["cracks", 0.1, "#7d776c"]] },
     marble: { name: "Marble chequer", group: "Indoor", color: "#e8e4dc", structure: "marble", dark: "#2f2c29", line: "#c9c3b7", vary: 0.1, details: [] },
-    carpet: { name: "Carpet (red)", group: "Indoor", color: "#8e2f2f", structure: "carpet", line: "#a84040", accent: "#c9a14a", vary: 0.15, details: [["stains", 0.15, "#6e2424"]] },
-    "carpet-green": { name: "Carpet (green)", group: "Indoor", color: "#3f6b4a", structure: "carpet", line: "#4f805b", accent: "#c9a14a", vary: 0.15, details: [["stains", 0.15, "#2f5238"]] },
+    carpet: { name: "Carpet (red)", group: "Carpet", color: "#8e2f2f", structure: "carpet", line: "#a84040", accent: "#c9a14a", vary: 0.15, details: [["stains", 0.15, "#6e2424"]] },
+    "carpet-green": { name: "Carpet (green)", group: "Carpet", color: "#3f6b4a", structure: "carpet", line: "#4f805b", accent: "#c9a14a", vary: 0.15, details: [["stains", 0.15, "#2f5238"]] },
+    // carpets: plain pile (soft: no per-square colour shift, so no patchwork), a few quiet weaves, carpet tiles
+    "carpet-wine": { name: "Plain carpet (wine)", group: "Carpet", color: "#6e2630", vary: 0.2, details: [["pile", 70, "#83313c"], ["pile", 40, "#5a1e27"], ["stains", 0.04, "#4f1a22"]] },
+    "carpet-crimson": { name: "Plain carpet (crimson)", group: "Carpet", color: "#9a2b2b", vary: 0.2, details: [["pile", 70, "#b03636"], ["pile", 40, "#7f2323"], ["stains", 0.04, "#6a1d1d"]] },
+    "carpet-navy": { name: "Plain carpet (navy)", group: "Carpet", color: "#283a5c", vary: 0.2, details: [["pile", 70, "#33496f"], ["pile", 40, "#1f2e4a"], ["stains", 0.04, "#1a263d"]] },
+    "carpet-moss": { name: "Plain carpet (moss green)", group: "Carpet", color: "#4a5e3a", vary: 0.2, details: [["pile", 70, "#576d45"], ["pile", 40, "#3d4f30"], ["stains", 0.04, "#334228"]] },
+    "carpet-teal": { name: "Plain carpet (teal)", group: "Carpet", color: "#2f6461", vary: 0.2, details: [["pile", 70, "#3a7572"], ["pile", 40, "#26524f"], ["stains", 0.04, "#1f4442"]] },
+    "carpet-plum": { name: "Plain carpet (plum)", group: "Carpet", color: "#5a3450", vary: 0.2, details: [["pile", 70, "#6a3f5f"], ["pile", 40, "#4a2a42"], ["stains", 0.04, "#3d2337"]] },
+    "carpet-ochre": { name: "Plain carpet (ochre)", group: "Carpet", color: "#b08a3e", vary: 0.2, details: [["pile", 70, "#c29a4b"], ["pile", 40, "#977532"], ["stains", 0.04, "#7f622a"]] },
+    "carpet-brown": { name: "Plain carpet (brown)", group: "Carpet", color: "#5e4433", vary: 0.2, details: [["pile", 70, "#6d503d"], ["pile", 40, "#4e382a"], ["stains", 0.04, "#3f2d22"]] },
+    "carpet-beige": { name: "Plain carpet (beige)", group: "Carpet", color: "#c9b896", vary: 0.2, details: [["pile", 70, "#d6c6a5"], ["pile", 40, "#b5a37f"], ["stains", 0.04, "#a39070"]] },
+    "carpet-cream": { name: "Plain carpet (cream)", group: "Carpet", color: "#e6dcc6", vary: 0.15, details: [["pile", 70, "#efe7d4"], ["pile", 40, "#d4c8ae"], ["stains", 0.04, "#c6b998"]] },
+    "carpet-grey": { name: "Plain carpet (grey)", group: "Carpet", color: "#8a8885", vary: 0.15, details: [["pile", 70, "#999794"], ["pile", 40, "#777572"], ["stains", 0.04, "#666461"]] },
+    "carpet-charcoal": { name: "Plain carpet (charcoal)", group: "Carpet", color: "#3d3c3c", vary: 0.15, details: [["pile", 70, "#4a4949"], ["pile", 40, "#323131"], ["stains", 0.04, "#2a2929"]] },
+    "carpet-worn": { name: "Worn carpet (red)", group: "Carpet", color: "#7d3030", vary: 0.35, age: 0.35, details: [["pile", 60, "#8f3a3a"], ["pile", 30, "#663030"], ["stains", 0.6, "#5a2424"], ["scratches", 0.6, "#9a6a5a"]] },
+    "carpet-berber": { name: "Loop pile (oatmeal)", group: "Carpet", color: "#bfb39a", structure: "loop", soft: true, line: "#a69a80", vary: 0.12, details: [["pile", 30, "#cdc2aa"], ["stains", 0.1, "#9c9076"]] },
+    "carpet-berber-grey": { name: "Loop pile (grey)", group: "Carpet", color: "#7f7e7a", structure: "loop", soft: true, line: "#6a6965", vary: 0.12, details: [["pile", 30, "#8e8d89"], ["stains", 0.1, "#5f5e5a"]] },
+    "carpet-ribbed": { name: "Ribbed carpet (sage)", group: "Carpet", color: "#7d8a6a", structure: "ribbed", soft: true, line: "#6b7759", vary: 0.12, details: [["pile", 30, "#8a9777"], ["stains", 0.1, "#5f6a4f"]] },
+    "carpet-tiles": { name: "Carpet tiles (grey)", group: "Carpet", color: "#6c6e72", structure: "carpet-tiles", line: "#55575b", vary: 0.2, details: [["pile", 40, "#7a7c80"], ["stains", 0.15, "#56585c"]] },
+    "carpet-tiles-blue": { name: "Carpet tiles (blue)", group: "Carpet", color: "#3e4f6b", structure: "carpet-tiles", line: "#2f3d55", vary: 0.2, details: [["pile", 40, "#4a5c7a"], ["stains", 0.15, "#2f3d55"]] },
     "metal-plate": { name: "Metal plate", group: "Indoor", color: "#7c7f86", structure: "plate", line: "#8a8e95", vary: 0.2, details: [["rust", 0.4, "#8a4a26"], ["scratches", 0.6, "#a4a8ae"]] },
     grating: { name: "Iron grating", group: "Indoor", color: "#2f2f33", structure: "grating", line: "#5d5d66", vary: 0.1, details: [["rust", 0.3, "#7a4123"]] },
     cave: { name: "Cave floor", group: "Indoor", color: "#5a544c", vary: 0.4, details: [["speckle", 28, "#4b463f"], ["pebbles", 5, "#6e675d"], ["cracks", 0.3, "#3f3a34"]] },
@@ -330,7 +354,7 @@ function variantParts(t, k) {
     const v = t.vary ?? 0.3;
     // structured floors (planks, tiles…) shift colour per square; natural ground barely does, its variation comes
     // from soft blotches that spill over square edges, so no patchwork shows
-    const natural = (t.structure ?? "none") === "none";
+    const natural = (t.structure ?? "none") === "none" || !!t.soft;
     const continuous = !!TILE_STRUCTURES[t.structure];
     const k0 = natural ? 0.15 : 0.3;
     const j = { h: (r() - 0.5) * 12 * v * k0, l: (r() - 0.5) * 0.08 * v * k0, s: (r() - 0.5) * 0.3 * v * k0 };
@@ -570,6 +594,14 @@ export const PATH_STYLES = {
     "wall-brick": { name: "Brick wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#2b211a", w: 12, cap: "square" }, { c: "#9b4a35", w: 7, cap: "square" }] },
     "wall-wood": { name: "Wooden wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#4a3522", w: 9, cap: "square" }, { c: "#8a6238", w: 5, cap: "square" }] },
     "wall-iron": { name: "Iron wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#2b2b30", w: 11, cap: "square" }, { c: "#6f727a", w: 5, cap: "square" }, { c: "#9aa0a8", w: 2, dash: "2 14" }] },
+    "wall-plaster": { name: "Plastered wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#2b211a", w: 10, cap: "square" }, { c: "#e6dfcf", w: 6, cap: "square" }] },
+    "wall-tiled": { name: "Tiled wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#2b211a", w: 10, cap: "square" }, { c: "#dfe8ea", w: 6, cap: "square" }, { c: "#93a9ae", w: 6, dash: "1 7" }] },
+    "wall-concrete": { name: "Concrete wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#2e2e2c", w: 14, cap: "square" }, { c: "#8e8d87", w: 10, cap: "square" }, { c: "#74736d", w: 10, dash: "1 31" }] },
+    "wall-log": { name: "Log wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#3a2a1e", w: 14, cap: "square" }, { c: "#7a5434", w: 10, cap: "square" }, { c: "#5a3c24", w: 10, dash: "2 12" }] },
+    "wall-partition": { name: "Thin partition", modes: "grid", smooth: false, snap: true, layers: [{ c: "#2b211a", w: 6, cap: "square" }, { c: "#cfc6b2", w: 3, cap: "square" }] },
+    "wall-glass": { name: "Glass wall", modes: "grid", smooth: false, snap: true, layers: [{ c: "#4f6f7a", w: 5, cap: "square", opacity: 0.85 }, { c: "#cfe9ef", w: 3, cap: "square", opacity: 0.75 }, { c: "#ffffff", w: 1, dash: "10 22", opacity: 0.8 }] },
+    "wall-glass-framed": { name: "Framed glass screen", modes: "grid", smooth: false, snap: true, layers: [{ c: "#4f6f7a", w: 5, cap: "square", opacity: 0.85 }, { c: "#cfe9ef", w: 3, cap: "square", opacity: 0.75 }, { c: "#3a3a41", w: 7, dash: "3 29" }] },
+    "wall-curtain": { name: "Shower curtain", modes: "grid", smooth: false, snap: true, layers: [{ c: "#8d949b", w: 1.5 }, { c: "#e8eef0", w: 4, dash: "5 2", opacity: 0.9 }] },
     "city-wall": { name: "City wall", modes: "freeform", smooth: false, layers: [{ c: "#4a3f33", w: 9 }, { c: "#b8ab90", w: 5 }, { c: "#4a3f33", w: 14, dash: "4 26" }] },
     fence: { name: "Fence", modes: "both", smooth: false, snap: true, layers: [{ c: "#6e4826", w: 3 }, { c: "#6e4826", w: 10, dash: "3 13" }] },
     "iron-railing": { name: "Iron railing", modes: "grid", smooth: false, snap: true, layers: [{ c: "#2b2b30", w: 2.5 }, { c: "#2b2b30", w: 8, dash: "2 6", cap: "round" }] },
@@ -823,6 +855,29 @@ export function textBox(o) {
     return { x: o.x - w / 2, y: o.y - size, w, h };
 }
 
+/** Where a stamp's whole image goes (before turning): its box, or for a cropped stamp (`crop` [x, y, w, h] in
+ * fractions of the image) the larger area the image fills around that box */
+export function stampImageBox(o) {
+    if (!o.crop) return { x: o.x, y: o.y, w: o.w, h: o.h };
+    const [cx, cy, cw, ch] = o.crop, w = o.w / cw, h = o.h / ch;
+    return { x: o.x - cx * w, y: o.y - cy * h, w, h };
+}
+/**
+ * A stamp with its box fitted to `crop` (the part of its image the picture is in, fractions of the whole image), the
+ * picture staying exactly where it was however the stamp is turned or flipped. Ports follow.
+ */
+export function fitStampBox(o, crop) {
+    const im = stampImageBox(o), [cx, cy, cw, ch] = crop;
+    const w = cw * im.w, h = ch * im.h;
+    // the new box's middle, from the old one, in the stamp's own (unturned, unflipped) frame
+    let dx = im.x + (cx + cw / 2) * im.w - (o.x + o.w / 2), dy = im.y + (cy + ch / 2) * im.h - (o.y + o.h / 2);
+    if (o.flip) dx = -dx;
+    const a = ((o.rot ?? 0) * Math.PI) / 180, c = [o.x + o.w / 2 + dx * Math.cos(a) - dy * Math.sin(a), o.y + o.h / 2 + dx * Math.sin(a) + dy * Math.cos(a)];
+    const old = o.crop ?? [0, 0, 1, 1];
+    const ports = o.ports?.map(([u, v]) => [(old[0] + u * old[2] - cx) / cw, (old[1] + v * old[3] - cy) / ch]);
+    return { ...o, x: c[0] - w / 2, y: c[1] - h / 2, w, h, crop: crop.map((v) => Math.round(v * 1e5) / 1e5), ...(ports ? { ports } : {}) };
+}
+
 /** Axis-aligned bounds of an object (before rotation) */
 export function bounds(o) {
     if (o.type === "room") { const e = roomExtent(o); return { x: o.x + e.x, y: o.y + e.y, w: e.w, h: e.h }; }
@@ -852,10 +907,14 @@ export function objectSvg(o, ctx) {
         const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
         const tf = [o.rot ? `rotate(${n1(o.rot)} ${n1(cx)} ${n1(cy)})` : "", o.flip ? `translate(${n1(2 * cx)} 0) scale(-1 1)` : ""].filter(Boolean).join(" ");
         const href = esc(ctx.stampHref(o));
+        // a cropped stamp's box is the part of the image with the picture in it; the whole image is drawn around it
+        const im = stampImageBox(o);
+        const pe = o.crop && ctx.edit ? ' pointer-events="none"' : "";
         const el = ctx.use
-            ? `<use href="${href}" x="${n1(o.x)}" y="${n1(o.y)}" width="${n1(o.w)}" height="${n1(o.h)}"/>`
-            : `<image href="${href}" x="${n1(o.x)}" y="${n1(o.y)}" width="${n1(o.w)}" height="${n1(o.h)}" preserveAspectRatio="none"/>`;
-        return `<g${id}${tf ? ` transform="${tf}"` : ""}${o.opacity != null && o.opacity < 1 ? ` opacity="${o.opacity}"` : ""}>${el}</g>`;
+            ? `<use href="${href}" x="${n1(im.x)}" y="${n1(im.y)}" width="${n1(im.w)}" height="${n1(im.h)}"${pe}/>`
+            : `<image href="${href}" x="${n1(im.x)}" y="${n1(im.y)}" width="${n1(im.w)}" height="${n1(im.h)}" preserveAspectRatio="none"${pe}/>`;
+        const hit = pe ? `<rect x="${n1(o.x)}" y="${n1(o.y)}" width="${n1(o.w)}" height="${n1(o.h)}" fill="transparent"/>` : "";
+        return `<g${id}${tf ? ` transform="${tf}"` : ""}${o.opacity != null && o.opacity < 1 ? ` opacity="${o.opacity}"` : ""}>${el}${hit}</g>`;
     }
     if (o.type === "ribbon") return ribbonSvg(o, ctx);
     if (o.type === "room") return roomSvg(o, ctx);
@@ -925,7 +984,7 @@ export function roomSvg(o, ctx, part = "all") {
     // the editor draws a room's floor, painted squares, grid and walls from bitmaps once they are ready
     const img = ctx.roomImage?.(o);
     let s, outline;
-    if (img) { s = img; outline = (o.shapes ?? []).some((sh) => sh.op !== "open") ? roomOutline(o).d : `M0 0H${n1(o.w)}V${n1(o.h)}H0Z`; }
+    if (img) { s = img; outline = (o.shapes ?? []).some((sh) => !isWallShape(sh)) ? roomOutline(o).d : `M0 0H${n1(o.w)}V${n1(o.h)}H0Z`; }
     else { const base = roomBase(o); s = `${base.defs ? `<defs>${base.defs}</defs>` : ""}${base.body}`; outline = base.outline; }
     if (ctx.edit) s += `<path d="${outline}" fill="transparent" stroke="none" pointer-events="all"/>`;
     return `<g${ctx.edit ? ` data-id="${esc(o.id)}"` : ""} transform="${tf}">${s}</g>`;
@@ -934,12 +993,12 @@ export function roomSvg(o, ctx, part = "all") {
 /** A room's own drawing (room coordinates): floor, painted squares, grid, walls. {defs, body, outline, box: area plus walls, floors} */
 export function roomBase(o) {
     const B = o.box ?? CELL;
-    const shaped = (o.shapes ?? []).some((sh) => sh.op !== "open");
+    const shaped = (o.shapes ?? []).some((sh) => !isWallShape(sh));
     const e = roomExtent(o);
     const mid = `r${hashStr(String(o.id)).toString(36)}`;
     let defs = "", s = "";
     // the room's area: its rectangle plus added shapes minus removed ones, in order (a mask for the floor)
-    if (shaped) defs += `<mask id="${mid}a" maskUnits="userSpaceOnUse" x="${e.x - 2}" y="${e.y - 2}" width="${e.w + 4}" height="${e.h + 4}"><rect width="${n1(o.w)}" height="${n1(o.h)}" fill="#fff"/>${(o.shapes ?? []).filter((sh) => sh.op !== "open").map((sh) => shapeSvg(sh, sh.op === "sub" ? "#000" : "#fff")).join("")}</mask>`;
+    if (shaped) defs += `<mask id="${mid}a" maskUnits="userSpaceOnUse" x="${e.x - 2}" y="${e.y - 2}" width="${e.w + 4}" height="${e.h + 4}"><rect width="${n1(o.w)}" height="${n1(o.h)}" fill="#fff"/>${(o.shapes ?? []).filter((sh) => !isWallShape(sh)).map((sh) => shapeSvg(sh, sh.op === "sub" ? "#000" : "#fff")).join("")}</mask>`;
     // textures fit the room's boxes: one texture square per box (scaled from the map's 64 px squares)
     const k = B / CELL;
     const floors = [...new Set([o.floor, ...Object.values(o.cells ?? {})].filter(Boolean))];
@@ -955,14 +1014,14 @@ export function roomBase(o) {
         floor += `<path d="${d}" fill="none" stroke="rgba(0,0,0,.28)" stroke-width="1"/>`;
     }
     s += shaped ? `<g mask="url(#${mid}a)">${floor}</g>` : floor;
-    // walls follow the outline of that area; openings cut gaps in them
+    // walls follow the outline of that area, left out where openings are
     const wall = PATH_STYLES[o.wall];
     const outline = shaped ? roomOutline(o).d : `M0 0H${n1(o.w)}V${n1(o.h)}H0Z`;
     const ww = wall ? Math.max(...wall.layers.map((l) => l.w)) : 0;
     if (wall) {
-        const opens = (o.shapes ?? []).filter((sh) => sh.op === "open");
+        const { paths, loose: opens } = roomWalls(o, wall);
         if (opens.length) defs += `<mask id="${mid}o" maskUnits="userSpaceOnUse" x="${e.x - ww}" y="${e.y - ww}" width="${e.w + ww * 2}" height="${e.h + ww * 2}"><rect x="${e.x - ww}" y="${e.y - ww}" width="${e.w + ww * 2}" height="${e.h + ww * 2}" fill="#fff"/>${opens.map((sh) => shapeSvg(sh, "#000")).join("")}</mask>`;
-        const strokes = wall.layers.map((l) => `<path d="${outline}" fill="none" stroke="${l.c}" stroke-width="${l.w}"${l.dash ? ` stroke-dasharray="${l.dash}"` : ""} stroke-linejoin="miter"/>`).join("");
+        const strokes = wall.layers.map((l, j) => (paths[j] ? `<path d="${paths[j]}" fill="none" stroke="${l.c}" stroke-width="${l.w}"${l.dash ? ` stroke-dasharray="${l.dash}"` : ""}${l.opacity ? ` opacity="${l.opacity}"` : ""} stroke-linejoin="miter"/>` : "")).join("");
         s += opens.length ? `<g mask="url(#${mid}o)">${strokes}</g>` : strokes;
     }
     const pad = ww / 2 + 2;
@@ -980,11 +1039,140 @@ const n1r = (v) => Math.round(v * 10000) / 10000;
 /** A pattern that reuses texture `f-<floor>` with a transform (rotated for ribbons, scaled for small or large boxes) */
 const scaledPattern = (id, floor, transform) => `<pattern id="${id}" href="#f-${floor}" xlink:href="#f-${floor}" patternTransform="${transform}"/>`;
 
-/** Markup of a room shape (in room coordinates): rect {x, y, w, h}, circle {cx, cy, r}, poly {pts}, open {cx, cy, len, thick, rot} */
+/**
+ * A window drawn for its size: w along the wall, h across it (the wall line through the middle), `panes` panes of
+ * glass. Frame sizes follow h (one box deep), so a wide window keeps a slim frame. As a data URI for a stamp's src.
+ */
+export function windowStampSrc(w, h, panes) {
+    const k = h / CELL, j = 6 * k, cy = h / 2, n = Math.max(1, Math.round(panes)), pane = (w - 2 * j) / n;
+    const mullions = Array.from({ length: n - 1 }, (_, i) => `M${n1(j + pane * (i + 1))} ${n1(cy - 4 * k)}V${n1(cy + 4 * k)}`).join("");
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n1(w)} ${n1(h)}" width="${n1(w)}" height="${n1(h)}">`
+        + `<rect x="0" y="${n1(cy - 6 * k)}" width="${n1(j)}" height="${n1(12 * k)}" fill="#2b211a"/><rect x="${n1(w - j)}" y="${n1(cy - 6 * k)}" width="${n1(j)}" height="${n1(12 * k)}" fill="#2b211a"/>`
+        + `<rect x="${n1(j)}" y="${n1(cy - 4 * k)}" width="${n1(w - 2 * j)}" height="${n1(8 * k)}" rx="${n1(k)}" fill="#bcdde4" stroke="#2b211a" stroke-width="${n1(1.5 * k)}"/>`
+        + (mullions ? `<path d="${mullions}" stroke="#2b211a" stroke-width="${n1(1.5 * k)}" stroke-linecap="round"/>` : "") + `</svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+/** What doors placed by the opening tool are made of */
+export const DOOR_MATERIALS = {
+    wood: { name: "Wood", fill: "#9a6a3a", line: "#2b211a" },
+    oak: { name: "Light wood", fill: "#c08e55", line: "#2b211a" },
+    "dark-wood": { name: "Dark wood", fill: "#5e3d22", line: "#1e1712" },
+    glass: { name: "Glass", fill: "#bcdde4", line: "#4f6f7a", opacity: 0.7, glint: true },
+    frosted: { name: "Frosted glass", fill: "#e3ecee", line: "#7d969c", opacity: 0.9 },
+    steel: { name: "Steel", fill: "#9aa0a8", line: "#2b2b30" },
+    iron: { name: "Iron", fill: "#4a4a52", line: "#1c1c20" },
+    brass: { name: "Brass", fill: "#c9a14a", line: "#5e4518" },
+    paper: { name: "Paper screen", fill: "#f1ead8", line: "#6e4826", lattice: true },
+};
+/**
+ * A door drawn for its opening: L wide (along the wall), box size B (frame sizes follow B), made of `material`.
+ * {svg, src (data URI), w, h, ox}: the stamp is w × h with the wall line through its middle, the opening running from
+ * ox to ox + L. Sliding doors are drawn half open: the panel covers the whole opening when closed, so half of it
+ * runs on past the opening (along the wall face, or into the wall for pocket doors). A glass sliding door fills the
+ * opening with `panels` glass panels (2-4) in frames of `material`: the end ones fixed, the inner ones sliding over
+ * them on a second track.
+ */
+export function doorStamp(kind, L, B, material = "wood", panels = 2) {
+    const k = B / CELL, j = 6 * k, clear = L - 2 * j, m = DOOR_MATERIALS[material] ?? DOOR_MATERIALS.wood, K = "#2b211a";
+    const jamb = (x, cy) => `<rect x="${n1(x)}" y="${n1(cy - 6 * k)}" width="${n1(j)}" height="${n1(12 * k)}" fill="${K}"/>`;
+    // a panel; `hidden` ones (inside a wall) are dashed and faint
+    const panel = (x, y, w, h, hidden = false) => {
+        if (w < 0.5 || h < 0.5) return "";
+        let out = `<rect x="${n1(x)}" y="${n1(y)}" width="${n1(w)}" height="${n1(h)}" rx="${n1(k)}" fill="${m.fill}"${m.opacity || hidden ? ` fill-opacity="${hidden ? 0.45 : m.opacity}"` : ""} stroke="${m.line}" stroke-width="${n1(1.3 * k)}"${hidden ? ` stroke-dasharray="${n1(4 * k)} ${n1(2 * k)}"` : ""}/>`;
+        if (hidden) return out;
+        const long = Math.max(w, h), along = w >= h, n = Math.floor(long / (12 * k));
+        if (m.lattice && n > 1) out += `<path d="${Array.from({ length: n - 1 }, (_, i) => { const t = (long / n) * (i + 1); return along ? `M${n1(x + t)} ${n1(y)}V${n1(y + h)}` : `M${n1(x)} ${n1(y + t)}H${n1(x + w)}`; }).join("")}" stroke="${m.line}" stroke-width="${n1(0.8 * k)}"/>`;
+        if (m.glint) out += along ? `<path d="M${n1(x + w * 0.15)} ${n1(y + h / 2)}H${n1(x + w * 0.35)}" stroke="#fff" stroke-width="${n1(0.9 * k)}" opacity=".8"/>`
+            : `<path d="M${n1(x + w / 2)} ${n1(y + h * 0.15)}V${n1(y + h * 0.35)}" stroke="#fff" stroke-width="${n1(0.9 * k)}" opacity=".8"/>`;
+        return out;
+    };
+    const arrow = (x0, x1, y) => { const d = Math.sign(x1 - x0) * 4 * k; return `<path d="M${n1(x0)} ${n1(y)}H${n1(x1)}M${n1(x1 - d)} ${n1(y - 3 * k)}L${n1(x1)} ${n1(y)}L${n1(x1 - d)} ${n1(y + 3 * k)}" fill="none" stroke="${K}" stroke-width="${n1(1.2 * k)}" stroke-linecap="round"/>`; };
+    const track = (x0, x1, y, c = K, w = 1) => `<path d="M${n1(x0)} ${n1(y)}H${n1(x1)}" stroke="${c}" stroke-width="${n1(w * k)}"${c === K ? ` stroke-dasharray="${n1(2 * k)} ${n1(3 * k)}"` : ""}/>`;
+    // a panel from a to b (along the wall, at y..y+t), dashed where it runs inside the wall (beyond lo..hi)
+    const inWall = (a, b, y, t, lo, hi) => panel(Math.max(a, lo), y, Math.min(b, hi) - Math.max(a, lo), t) + panel(a, y, Math.min(b, lo) - a, t, true) + panel(Math.max(a, hi), y, b - Math.max(a, hi), t, true);
+    let W, H, ox = 0, body;
+    switch (kind) {
+        case "door": {
+            H = 2 * L; W = L; const cy = L;
+            body = jamb(0, cy) + jamb(L - j, cy) + `<path d="M${n1(L - j)} ${n1(cy)}A${n1(clear)} ${n1(clear)} 0 0 0 ${n1(j)} ${n1(cy - clear)}" fill="none" stroke="${K}" stroke-width="${n1(1.2 * k)}" stroke-dasharray="${n1(3 * k)} ${n1(3 * k)}"/>`
+                + panel(j, cy - clear, 7 * k, clear);
+            break;
+        }
+        case "double-door": {
+            H = L; W = L; const cy = L / 2, leaf = clear / 2;
+            body = jamb(0, cy) + jamb(L - j, cy) + `<path d="M${n1(L / 2)} ${n1(cy)}A${n1(leaf)} ${n1(leaf)} 0 0 0 ${n1(j)} ${n1(cy - leaf)}M${n1(L / 2)} ${n1(cy)}A${n1(leaf)} ${n1(leaf)} 0 0 1 ${n1(L - j)} ${n1(cy - leaf)}" fill="none" stroke="${K}" stroke-width="${n1(1.2 * k)}" stroke-dasharray="${n1(3 * k)} ${n1(3 * k)}"/>`
+                + panel(j, cy - leaf, 7 * k, leaf) + panel(L - j - 7 * k, cy - leaf, 7 * k, leaf);
+            break;
+        }
+        case "sliding-door": {
+            // one panel on the room side of the wall, overlapping both jambs
+            H = B; const cy = B / 2, P = clear + 4 * k, x = j - 2 * k + P / 2;
+            W = x + P + 2 * k;
+            body = jamb(0, cy) + jamb(L - j, cy) + track(j, W - 2 * k, cy + 9.5 * k) + panel(x, cy + 7 * k, P, 5 * k) + arrow(j + 4 * k, j + 4 * k + clear / 3, cy + 19 * k);
+            break;
+        }
+        case "double-sliding-door": {
+            // two panels parting in the middle, each sliding half its length away from it
+            H = B; const cy = B / 2, P = L / 2 - j + 2 * k;
+            ox = Math.max(0, P / 2 - j + 4 * k); W = L + 2 * ox;
+            const a = ox + j - 2 * k - P / 2, b = ox + L / 2 + P / 2;
+            body = jamb(ox, cy) + jamb(ox + L - j, cy) + track(2 * k, W - 2 * k, cy + 9.5 * k) + panel(a, cy + 7 * k, P, 5 * k) + panel(b, cy + 7 * k, P, 5 * k)
+                + arrow(ox + L / 2 - 4 * k, ox + L / 2 - 4 * k - clear / 4, cy + 19 * k) + arrow(ox + L / 2 + 4 * k, ox + L / 2 + 4 * k + clear / 4, cy + 19 * k);
+            break;
+        }
+        case "pocket-door": {
+            // the panel slides into a pocket in the wall beyond the opening; the part inside the wall is dashed
+            H = B; const cy = B / 2, P = clear + 2 * k, x = j + P / 2;
+            W = x + P + 4 * k;
+            body = jamb(0, cy) + `<rect x="${n1(L - j)}" y="${n1(cy - 3.5 * k)}" width="${n1(W - L + j - 2 * k)}" height="${n1(7 * k)}" fill="none" stroke="${K}" stroke-width="${n1(0.8 * k)}" stroke-dasharray="${n1(2 * k)} ${n1(2 * k)}"/>`
+                + inWall(x, x + P, cy - 2.5 * k, 5 * k, j, L - j) + arrow(j + 4 * k, j + 4 * k + clear / 3, cy + 16 * k);
+            break;
+        }
+        case "double-pocket-door": {
+            H = B; const cy = B / 2, P = clear / 2 + k;
+            ox = P + 4 * k; W = L + 2 * ox;
+            const lo = ox + j, hi = ox + L - j, a = lo - P / 2, b = ox + L / 2 + P / 2;
+            body = `<rect x="${n1(lo - P - 2 * k)}" y="${n1(cy - 3.5 * k)}" width="${n1(P + 2 * k)}" height="${n1(7 * k)}" fill="none" stroke="${K}" stroke-width="${n1(0.8 * k)}" stroke-dasharray="${n1(2 * k)} ${n1(2 * k)}"/>`
+                + `<rect x="${n1(hi)}" y="${n1(cy - 3.5 * k)}" width="${n1(P + 2 * k)}" height="${n1(7 * k)}" fill="none" stroke="${K}" stroke-width="${n1(0.8 * k)}" stroke-dasharray="${n1(2 * k)} ${n1(2 * k)}"/>`
+                + inWall(a, a + P, cy - 2.5 * k, 5 * k, lo, hi) + inWall(b, b + P, cy - 2.5 * k, 5 * k, lo, hi)
+                + arrow(ox + L / 2 - 4 * k, ox + L / 2 - 4 * k - clear / 4, cy + 16 * k) + arrow(ox + L / 2 + 4 * k, ox + L / 2 + 4 * k + clear / 4, cy + 16 * k);
+            break;
+        }
+        case "barn-door": {
+            // a panel hanging from a rail on the wall face, wider than the opening
+            H = B; const cy = B / 2, P = clear + 8 * k, x = j - 4 * k + P / 2;
+            W = x + P + 4 * k;
+            body = jamb(0, cy) + jamb(L - j, cy) + track(2 * k, W - 2 * k, cy + 9 * k, "#3a3a41", 2.5) + panel(x, cy + 8 * k, P, 8 * k)
+                + `<circle cx="${n1(x + 6 * k)}" cy="${n1(cy + 9 * k)}" r="${n1(2.5 * k)}" fill="#5d5d66" stroke="${K}" stroke-width="${n1(k)}"/><circle cx="${n1(x + P - 6 * k)}" cy="${n1(cy + 9 * k)}" r="${n1(2.5 * k)}" fill="#5d5d66" stroke="${K}" stroke-width="${n1(k)}"/>`
+                + arrow(j + 4 * k, j + 4 * k + clear / 3, cy + 24 * k);
+            break;
+        }
+        case "glass-sliding-door": {
+            H = B; W = L; const cy = B / 2, n = Math.max(2, Math.min(4, Math.round(panels))), p = clear / n + 2 * k;
+            const frame = material === "glass" ? "#7d8a8f" : m.fill;
+            const pane = (x, y) => `<rect x="${n1(x)}" y="${n1(y)}" width="${n1(p)}" height="${n1(4 * k)}" fill="#bcdde4" fill-opacity=".75" stroke="${frame}" stroke-width="${n1(1.6 * k)}"/>`
+                + `<path d="M${n1(x + p * 0.2)} ${n1(y + 2 * k)}H${n1(x + p * 0.4)}" stroke="#fff" stroke-width="${n1(0.8 * k)}" opacity=".8"/>`;
+            // which panels slide and which way (half their width, over the fixed ones); the rest stay put
+            const moves = n === 2 ? [1, 0] : n === 3 ? [0, 1, 0] : [0, -1, 1, 0];
+            const x0 = (i) => j + (i * clear) / n - k;
+            body = jamb(0, cy) + jamb(L - j, cy)
+                + moves.map((d, i) => (d ? "" : pane(x0(i), cy - 4.5 * k))).join("")
+                + moves.map((d, i) => (d ? pane(x0(i) + (d * p) / 2, cy + 0.5 * k) : "")).join("")
+                + moves.map((d, i) => (d ? arrow(x0(i) + p / 2, x0(i) + p / 2 + (d * p) / 3, cy + 14 * k) : "")).join("");
+            break;
+        }
+        default: return null;
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n1(W)} ${n1(H)}" width="${n1(W)}" height="${n1(H)}">${body}</svg>`;
+    return { svg, src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, w: W, h: H, ox };
+}
+/** Openings and wall pieces ({op: open | wall, cx, cy, len, thick, rot}) change the walls, not the room's area */
+export const isWallShape = (sh) => sh.op === "open" || sh.op === "wall";
+/** Markup of a room shape (in room coordinates): rect {x, y, w, h}, circle {cx, cy, r}, poly {pts}, open/wall {cx, cy, len, thick, rot} */
 export function shapeSvg(sh, fill) {
     if (sh.shape === "circle") return `<circle cx="${n1(sh.cx)}" cy="${n1(sh.cy)}" r="${n1(sh.r)}" fill="${fill}"/>`;
     if (sh.shape === "poly") return `<path d="M${sh.pts.map((p) => `${n1(p[0])} ${n1(p[1])}`).join("L")}Z" fill="${fill}"/>`;
-    if (sh.op === "open") return `<rect x="${n1(sh.cx - sh.len / 2)}" y="${n1(sh.cy - sh.thick / 2)}" width="${n1(sh.len)}" height="${n1(sh.thick)}" fill="${fill}" transform="rotate(${n1(sh.rot ?? 0)} ${n1(sh.cx)} ${n1(sh.cy)})"/>`;
+    if (isWallShape(sh)) return `<rect x="${n1(sh.cx - sh.len / 2)}" y="${n1(sh.cy - sh.thick / 2)}" width="${n1(sh.len)}" height="${n1(sh.thick)}" fill="${fill}" transform="rotate(${n1(sh.rot ?? 0)} ${n1(sh.cx)} ${n1(sh.cy)})"/>`;
     return `<rect x="${n1(sh.x)}" y="${n1(sh.y)}" width="${n1(sh.w)}" height="${n1(sh.h)}" fill="${fill}"/>`;
 }
 const inShape = (sh, [x, y]) => {
@@ -1031,7 +1219,7 @@ const outlineCache = new Map();
  * Walls are drawn along it, so they follow every added and removed shape.
  */
 export function roomOutline(o) {
-    const key = JSON.stringify([o.w, o.h, (o.shapes ?? []).filter((s) => s.op !== "open")]);
+    const key = JSON.stringify([o.w, o.h, (o.shapes ?? []).filter((s) => !isWallShape(s))]);
     if (outlineCache.has(key)) return outlineCache.get(key);
     const e = roomExtent(o);
     const res = Math.max(2, Math.min(6, Math.max(e.w, e.h) / 300));
@@ -1069,9 +1257,88 @@ export function roomOutline(o) {
     outlineCache.set(key, out);
     return out;
 }
+// spans [lo, hi] along one wall: add one (merging what it touches), or cut one out
+const addSpan = (spans, lo, hi) => {
+    const out = [];
+    for (const [a, b] of spans) { if (b < lo || a > hi) out.push([a, b]); else { lo = Math.min(lo, a); hi = Math.max(hi, b); } }
+    return [...out, [lo, hi]].sort((x, y) => x[0] - y[0]);
+};
+const cutSpan = (spans, lo, hi) => spans.flatMap(([a, b]) => (b <= lo || a >= hi ? [[a, b]] : [...(a < lo ? [[a, lo]] : []), ...(b > hi ? [[hi, b]] : [])]));
+/**
+ * A room's walls along its outline, with the gaps its openings cut left out: {paths: one path per wall layer (room
+ * coordinates), loose: openings that no longer sit on any wall, masked as before}. A gap stays on the wall it sits on
+ * and stops half a wall short of that wall's ends, so the wall meeting it there stays whole; gaps that reach a corner
+ * from both sides take the corner with them. At every cut end the inner layers stop short of the outer one, so the
+ * wall's border closes over the end. Openings only ever take wall away (overlapping ones merge into one gap); a wall
+ * piece (op: wall) puts it back where it lies, in the order they were placed.
+ */
+export function roomWalls(o, wall) {
+    const ww = Math.max(...wall.layers.map((l) => l.w));
+    const loops = (o.shapes ?? []).some((sh) => !isWallShape(sh)) ? roomOutline(o).loops : [[[0, 0], [o.w, 0], [o.w, o.h], [0, o.h]]];
+    const pt = (p) => `${n1(p[0])} ${n1(p[1])}`;
+    const pieces = (o.shapes ?? []).filter(isWallShape);
+    if (!pieces.some((sh) => sh.op === "open")) { const d = loops.map((l) => `M${l.map(pt).join("L")}Z`).join(""); return { paths: wall.layers.map(() => d), loose: [] }; }
+    const spans = loops.map((loop) => loop.map(() => [])), loose = [];
+    for (const sh of pieces) {
+        const a = ((sh.rot ?? 0) * Math.PI) / 180, u = [Math.cos(a), Math.sin(a)];
+        // the wall segment the piece lies along: parallel to it and nearest its centre
+        let best = null;
+        loops.forEach((loop, li) => { for (let i = 0; i < loop.length; i++) {
+            const p = loop[i], q = loop[(i + 1) % loop.length], dx = q[0] - p[0], dy = q[1] - p[1], l = Math.hypot(dx, dy);
+            if (l < 1e-6 || Math.abs((dx * u[1] - dy * u[0]) / l) > 0.02) continue;
+            const dist = Math.abs((sh.cx - p[0]) * u[1] - (sh.cy - p[1]) * u[0]);
+            if (dist > sh.thick / 2 || (best && dist >= best.dist)) continue;
+            best = { li, i, dist, p, d: [dx / l, dy / l], l };
+        } });
+        if (!best) { if (sh.op === "open") loose.push(sh); continue; }
+        const list = spans[best.li], t = (sh.cx - best.p[0]) * best.d[0] + (sh.cy - best.p[1]) * best.d[1];
+        if (sh.op === "wall") { list[best.i] = cutSpan(list[best.i], t - sh.len / 2, t + sh.len / 2); continue; }
+        const lo = Math.max(t - sh.len / 2, ww / 2), hi = Math.min(t + sh.len / 2, best.l - ww / 2);
+        if (hi - lo >= 0.5) list[best.i] = addSpan(list[best.i], lo, hi);
+    }
+    const paths = wall.layers.map(() => []);
+    loops.forEach((loop, li) => {
+        const n = loop.length, len = loop.map((p, i) => { const q = loop[(i + 1) % n]; return Math.hypot(q[0] - p[0], q[1] - p[1]); });
+        const sp = spans[li].map((list) => list.filter(([lo, hi]) => hi - lo >= 0.5).map((x) => [...x]));
+        // gaps reaching a corner from both sides take the corner with them
+        const near = ww / 2 + 0.5;
+        for (let i = 0; i < n; i++) {
+            const k = (i - 1 + n) % n, a = sp[k].at(-1), b = sp[i][0];
+            if (a && b && a[1] >= len[k] - near && b[0] <= near) { a[1] = len[k]; b[0] = 0; }
+        }
+        // the gaps along the whole loop (arc length from its first point), merged
+        const start = [0];
+        for (let i = 0; i < n; i++) start.push(start[i] + len[i]);
+        const total = start[n];
+        const gaps = [];
+        for (const [lo, hi] of sp.flatMap((list, i) => list.map(([a, b]) => [start[i] + a, start[i] + b])).sort((x, y) => x[0] - y[0])) {
+            if (gaps.length && lo <= gaps.at(-1)[1] + 1e-6) gaps.at(-1)[1] = Math.max(gaps.at(-1)[1], hi); else gaps.push([lo, hi]);
+        }
+        if (!gaps.length) { const d = `M${loop.map(pt).join("L")}Z`; paths.forEach((p) => p.push(d)); return; }
+        const at = (s) => {
+            s = ((s % total) + total) % total;
+            let i = 0;
+            while (i < n - 1 && s > start[i + 1]) i++;
+            const p = loop[i], q = loop[(i + 1) % n], f = len[i] ? (s - start[i]) / len[i] : 0;
+            return [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f];
+        };
+        // the wall left between one gap and the next, each layer trimmed so the outer one closes over its ends
+        gaps.forEach((g, k) => {
+            const a = g[1], b = k + 1 < gaps.length ? gaps[k + 1][0] : gaps[0][0] + total;
+            wall.layers.forEach((l, j) => {
+                const tr = (ww - l.w) / 2, a1 = a + tr, b1 = b - tr;
+                if (b1 - a1 < 0.5) return;
+                const corners = [...start.slice(0, n).map((v, i) => [v, i]), ...start.slice(0, n).map((v, i) => [v + total, i])]
+                    .filter(([v]) => v > a1 + 1e-6 && v < b1 - 1e-6).sort((x, y) => x[0] - y[0]);
+                paths[j].push(`M${[at(a1), ...corners.map(([, i]) => loop[i]), at(b1)].map(pt).join("L")}`);
+            });
+        });
+    });
+    return { paths: paths.map((p) => p.join("")), loose };
+}
 /** Nearest point on a room's wall (room coordinates) to p: {p, angle, dist} */
 export function nearestWall(o, p) {
-    const loops = (o.shapes ?? []).some((sh) => sh.op !== "open") ? roomOutline(o).loops : [[[0, 0], [o.w, 0], [o.w, o.h], [0, o.h]]];
+    const loops = (o.shapes ?? []).some((sh) => !isWallShape(sh)) ? roomOutline(o).loops : [[[0, 0], [o.w, 0], [o.w, o.h], [0, o.h]]];
     let best = null;
     for (const loop of loops) for (let i = 0; i < loop.length; i++) {
         const a = loop[i], b = loop[(i + 1) % loop.length];
@@ -1124,6 +1391,84 @@ export function rehome(o, from, to) {
     return { ...o, x: c[0], y: c[1], ...(o.type === "text" ? { rot: (((o.rot ?? 0) + dRot) % 360 + 360) % 360 || undefined } : {}) };
 }
 
+/**
+ * An object mirrored across the line x = c (axis "h", left-right) or y = c ("v", top-bottom), in the coordinates it
+ * is in. Mirroring turns things the other way. A room mirrors what it holds in its own coordinates (shapes, painted
+ * squares, contents); stamps only have a left-right flip, so top-bottom is that plus half a turn.
+ */
+export function flipObject(o, axis, c) {
+    const m = mirrorFn(axis, c);
+    const turn = (r) => (((-(r ?? 0) % 360) + 360) % 360) || undefined;
+    if (o.pts) return { ...o, pts: o.pts.map(m) };
+    if (o.type === "stamp" || o.type === "room") {
+        const [cx, cy] = m([o.x + o.w / 2, o.y + o.h / 2]);
+        const moved = { ...o, x: cx - o.w / 2, y: cy - o.h / 2 };
+        if (o.type === "stamp") return { ...moved, flip: !o.flip || undefined, rot: turn(axis === "h" ? o.rot : (o.rot ?? 0) + 180) };
+        return { ...moved, rot: turn(o.rot), ...flipRoomInside(o, axis) };
+    }
+    const [x, y] = m([o.x, o.y]);
+    return { ...o, x, y, ...(o.type === "text" ? { rot: turn(o.rot) } : {}) };
+}
+/**
+ * An object turned by `deg` (clockwise on screen) about c, in the coordinates it is in. A square-set room turned by
+ * quarter turns is turned for real (width and height swap, what it holds turns inside it), so it stays on its grid;
+ * other rooms, stamps and text turn by their `rot`.
+ */
+export function turnObject(o, deg, c) {
+    const turn = (p) => rotateAbout(p, c, deg);
+    const add = (r) => ((((r ?? 0) + deg) % 360) + 360) % 360 || undefined;
+    if (o.pts) return { ...o, pts: o.pts.map(turn) };
+    if (o.type === "stamp" || o.type === "room") {
+        const [cx, cy] = turn([o.x + o.w / 2, o.y + o.h / 2]);
+        if (o.type === "room" && !o.rot && deg % 90 === 0) {
+            const odd = Math.abs(deg / 90) % 2 === 1, w = odd ? o.h : o.w, h = odd ? o.w : o.h;
+            return { ...o, ...turnRoomInside(o, deg, w, h), x: cx - w / 2, y: cy - h / 2, w, h };
+        }
+        return { ...o, x: cx - o.w / 2, y: cy - o.h / 2, rot: add(o.rot) };
+    }
+    const [x, y] = turn([o.x, o.y]);
+    return { ...o, x, y, ...(o.type === "text" ? { rot: add(o.rot) } : {}) };
+}
+/** p turned about c (exact for quarter turns, so grid positions stay whole numbers) */
+const rotateAbout = ([x, y], [cx, cy], deg) => {
+    const q = deg % 90 === 0 ? ((deg / 90) % 4 + 4) % 4 : -1;
+    const [cos, sin] = q >= 0 ? [[1, 0], [0, 1], [-1, 0], [0, -1]][q] : [Math.cos((deg * Math.PI) / 180), Math.sin((deg * Math.PI) / 180)];
+    return [cx + (x - cx) * cos - (y - cy) * sin, cy + (x - cx) * sin + (y - cy) * cos];
+};
+/** A room's shapes, painted squares and contents turned a quarter turn (or more) into its new w × h box */
+function turnRoomInside(o, deg, w, h) {
+    const c = [o.w / 2, o.h / 2], dx = (w - o.w) / 2, dy = (h - o.h) / 2, B = o.box ?? CELL;
+    const m = (p) => { const [x, y] = rotateAbout(p, c, deg); return [x + dx, y + dy]; };
+    const out = { children: (o.children ?? []).map((ch) => moveObject(turnObject(ch, deg, c), dx, dy)) };
+    if (o.shapes) out.shapes = o.shapes.map((sh) => {
+        if (sh.shape === "poly") return { ...sh, pts: sh.pts.map(m) };
+        if (sh.shape === "circle" || isWallShape(sh)) { const [cx, cy] = m([sh.cx, sh.cy]); return { ...sh, cx, cy, ...(isWallShape(sh) ? { rot: ((((sh.rot ?? 0) + deg) % 360) + 360) % 360 } : {}) }; }
+        const a = m([sh.x, sh.y]), b = m([sh.x + sh.w, sh.y + sh.h]);
+        return { ...sh, x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]) };
+    });
+    if (o.cells) out.cells = Object.fromEntries(Object.entries(o.cells).map(([k, f]) => {
+        const [col, row] = k.split(",").map(Number), [x, y] = m([(col + 0.5) * B, (row + 0.5) * B]);
+        return [`${Math.floor(x / B)},${Math.floor(y / B)}`, f];
+    }));
+    return out;
+}
+const mirrorFn = (axis, c) => (axis === "h" ? ([x, y]) => [2 * c - x, y] : ([x, y]) => [x, 2 * c - y]);
+/** A room's shapes, painted squares and contents mirrored about its own middle */
+function flipRoomInside(o, axis) {
+    const h = axis === "h", B = o.box ?? CELL, c = (h ? o.w : o.h) / 2, n = Math.round((h ? o.w : o.h) / B), m = mirrorFn(axis, c);
+    const out = { children: (o.children ?? []).map((ch) => flipObject(ch, axis, c)) };
+    if (o.shapes) out.shapes = o.shapes.map((sh) => {
+        if (sh.shape === "poly") return { ...sh, pts: sh.pts.map(m) };
+        if (sh.shape === "circle" || isWallShape(sh)) { const [cx, cy] = m([sh.cx, sh.cy]); return { ...sh, cx, cy, ...(isWallShape(sh) ? { rot: -(sh.rot ?? 0) || 0 } : {}) }; }
+        return h ? { ...sh, x: 2 * c - sh.x - sh.w } : { ...sh, y: 2 * c - sh.y - sh.h };
+    });
+    if (o.cells) out.cells = Object.fromEntries(Object.entries(o.cells).map(([k, f]) => {
+        const [col, row] = k.split(",").map(Number);
+        return [h ? `${n - 1 - col},${row}` : `${col},${n - 1 - row}`, f];
+    }));
+    return out;
+}
+
 /** A layer in two parts: painted squares, then objects (floor-level ones first). The map grid goes between them on the top layer. */
 export function layerParts(layer, ctx, region) {
     // ctx.cellFloors: painted squares drawn one by one (the saved SVG); otherwise as pattern-filled paths
@@ -1158,6 +1503,17 @@ export function touchesBox(o, box) {
     }
     const b = bounds(o);
     return b.x < box.x + box.w && b.x + b.w > box.x && b.y < box.y + box.h && b.y + b.h > box.y;
+}
+
+/** Is an object wholly inside a box {x, y, w, h}? (lines, strips and areas by their shape, the rest by their bounds) */
+export function insideBox(o, box) {
+    const inBox = (p, pad = 0) => p[0] - pad >= box.x && p[0] + pad <= box.x + box.w && p[1] - pad >= box.y && p[1] + pad <= box.y + box.h;
+    if (o.type === "path" || o.type === "ribbon" || o.type === "area") {
+        const pad = o.type === "ribbon" ? ((o.cols ?? RIBBONS[o.style]?.cols ?? 2) * (o.box ?? CELL)) / 2 : 0;
+        return sampleCurve(o.pts, o.smooth ?? PATH_STYLES[o.style]?.smooth ?? true, o.type === "area" || !!o.closed, 6).every((q) => inBox(q.p, pad));
+    }
+    const b = bounds(o);
+    return b.x >= box.x && b.y >= box.y && b.x + b.w <= box.x + box.w && b.y + b.h <= box.y + box.h;
 }
 
 /** Does an object show anywhere in a region {x, y, w, h}? (generous: rotation and stroke widths count) */
@@ -1216,9 +1572,28 @@ ${layers || gridSvg(doc)}
 `;
 }
 
-/** Map document from a saved SVG, or null */
-export function parseMapSvg(text) {
-    const m = String(text ?? "").match(/<metadata id="books-meta-map"><!\[CDATA\[([\s\S]*?)\]\]><\/metadata>/);
+/**
+ * A blueprint (a saved group of map objects: {objects, w, h, grid, textures}, its box from 0,0 to w,h) as a
+ * self-contained SVG: a preview of the objects, the blueprint itself in <metadata id="books-meta-blueprint">.
+ */
+export function renderBlueprintSvg(bp, ctx) {
+    const json = JSON.stringify(bp).replace(/]]>/g, "]]]]><![CDATA[>");
+    const pad = 8, w = Math.ceil(bp.w + pad * 2), h = Math.ceil(bp.h + pad * 2);
+    const layer = { objects: bp.objects, floor: {} };
+    const floors = objectFloors(bp.objects, bp.textures);
+    return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="${-pad} ${-pad} ${w} ${h}" width="${w}" height="${h}">
+<metadata id="books-meta-blueprint"><![CDATA[${json}]]></metadata>
+<defs>${texturesDefs(floors, bp.textures)}${MACRO_DEFS}${ctx.defs ?? ""}</defs>
+${layerSvg(layer, { ...ctx, cellFloors: true, custom: bp.textures })}
+</svg>
+`;
+}
+/** Floor ids the objects of a blueprint (or any list of objects) need */
+export const objectFloors = (objects, custom) => usedFloors({ kind: "freeform", backdrop: "-", layers: [{ objects, floor: {} }] }, custom);
+
+/** Map document (or with id "books-meta-blueprint", a blueprint) from a saved SVG, or null */
+export function parseMapSvg(text, id = "books-meta-map") {
+    const m = String(text ?? "").match(new RegExp(`<metadata id="${id}"><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/metadata>`));
     if (!m) return null;
     try { return JSON.parse(m[1].replace(/]]]]><!\[CDATA\[>/g, "]]>")); } catch { return null; }
 }

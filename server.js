@@ -302,6 +302,16 @@ const routes = {
         return worlds.saveMap(need(b.location, "location"), b.doc, b.baseMtime);
     },
     "GET /api/stamps": () => ({ vault: worlds.vaultStamps() }),
+    "GET /api/map-blueprints": () => worlds.blueprintLibrary(),
+    "POST /api/map-blueprint/rename": async ({ req }) => { const b = await json(req); return worlds.renameBlueprint(b.file, need(b.name, "name"), b.category); },
+    "DELETE /api/map-blueprint": ({ q }) => worlds.deleteBlueprint(need(q.get("file"), "file")),
+    "POST /api/map-blueprint/category": async ({ req }) => { const b = await json(req); return worlds.saveBlueprintCategory(b.from, need(b.to, "to")); },
+    "DELETE /api/map-blueprint/category": ({ q }) => worlds.deleteBlueprintCategory(need(q.get("name"), "name")),
+    "GET /api/map-blueprint": ({ q }) => worlds.readBlueprint(need(q.get("file"), "file")),
+    "POST /api/map-blueprint": async ({ req }) => {
+        const b = JSON.parse((await readBody(req, 30 * 1024 * 1024)).toString("utf8") || "{}");
+        return worlds.saveBlueprint(need(b.name, "name"), b.category, b.blueprint);
+    },
     "GET /api/textures": () => worlds.textures(),
     "POST /api/textures": async ({ req }) => { const b = await json(req); return worlds.saveTextures(b.textures, b.baseMtime); },
     "POST /api/stamps": async ({ req, q }) => worlds.addStamp(need(q.get("filename"), "filename"), await readBody(req, 9 * 1024 * 1024), q.get("set") || "Pasted"),
@@ -369,8 +379,9 @@ async function serveFile(res, rel) {
     fs.createReadStream(abs).pipe(res);
 }
 
-// built-in map stamps (public/stamps), cached: they only change with the app
-async function serveStamp(res, pathname) {
+// built-in map stamps (public/stamps): the browser keeps them but asks each time whether they changed (a rebuilt
+// stamp must never show its old image in the size the new manifest gives it)
+async function serveStamp(req, res, pathname) {
     const root = path.join(HERE, "public", "stamps");
     const abs = path.resolve(root, `.${decodeURIComponent(pathname.slice("/stamps".length))}`);
     const ext = path.extname(abs).slice(1).toLowerCase();
@@ -378,7 +389,9 @@ async function serveStamp(res, pathname) {
     if (!abs.startsWith(root + path.sep) || !type) throw fail(404, "Not found");
     const st = await fsp.stat(abs).catch(() => null);
     if (!st?.isFile()) throw fail(404, "Not found");
-    res.writeHead(200, { "content-type": type, "content-length": st.size, "cache-control": ext === "json" ? "no-cache" : "max-age=86400" });
+    const modified = new Date(Math.floor(st.mtimeMs / 1000) * 1000).toUTCString();
+    if (req.headers["if-modified-since"] === modified) { res.writeHead(304, { "cache-control": "no-cache", "last-modified": modified }); res.end(); return; }
+    res.writeHead(200, { "content-type": type, "content-length": st.size, "cache-control": "no-cache", "last-modified": modified });
     fs.createReadStream(abs).pipe(res);
 }
 
@@ -393,7 +406,7 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         if (req.method === "GET" && url.pathname.startsWith("/files/") && vault) return await serveFile(res, decodeURIComponent(url.pathname.slice(7)));
-        if (req.method === "GET" && url.pathname.startsWith("/stamps/")) return await serveStamp(res, url.pathname);
+        if (req.method === "GET" && url.pathname.startsWith("/stamps/")) return await serveStamp(req, res, url.pathname);
         if (req.method === "GET" && STATIC[url.pathname]) {
             const [file, type] = STATIC[url.pathname];
             return send(res, 200, await fsp.readFile(path.join(HERE, file)), type);

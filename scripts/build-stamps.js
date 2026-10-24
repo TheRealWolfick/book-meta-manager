@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { doorStamp } from "../public/map-core.js";
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "stamps");
 const arg = (n) => { const i = process.argv.indexOf(`--${n}`); return i > -1 ? process.argv[i + 1] : null; };
@@ -26,6 +27,23 @@ const path_ = (d, fill = "none", sw = 2.5) => `<path d="${d}" fill="${fill}" ${o
 const line = (d, color = K, w = 2, extra = "") => `<path d="${d}" fill="none" stroke="${color}" stroke-width="${w}" stroke-linecap="round" ${extra}/>`;
 const shadow = (inner) => `<g transform="translate(3 4)" opacity=".2">${inner.replace(/fill="[^"]*"/g, 'fill="#000"').replace(/stroke="[^"]*"/g, 'stroke="none"')}</g>`;
 const withShadow = (inner) => shadow(inner) + inner;
+/** a leaf from (cx, cy) pointing at `ang` degrees (0 = up), len long, w wide */
+const leaf = (cx, cy, len, w, ang, fill, rib = P.leafD) => `<g transform="translate(${cx} ${cy}) rotate(${ang})"><path d="M0 0Q${w} ${-len * 0.5} 0 ${-len}Q${-w} ${-len * 0.5} 0 0Z" fill="${fill}" ${ol(1.1)}/>${rib ? `<path d="M0 -2V${-len + 3}" stroke="${rib}" stroke-width="0.9" fill="none"/>` : ""}</g>`;
+/** a round plant pot with soil, seen from above */
+const pot = (cx, cy, r, fill = P.copper) => withShadow(circ(cx, cy, r, fill, 2)) + circ(cx, cy, r - 3, "#5a3c24", 1);
+/** a palm frond: a midrib with leaflets */
+const frond = (cx, cy, len, ang) => `<g transform="translate(${cx} ${cy}) rotate(${ang})">${line(Array.from({ length: Math.floor(len / 6) - 1 }, (_, i) => { const t = 6 + i * 6, s = 3 + 9 * (1 - t / len); return `M0 ${-t}L${s} ${-t - 7}M0 ${-t}L${-s} ${-t - 7}`; }).join(""), P.leaf, 2.6)}${line(`M0 0V${-len}`, P.leafD, 1.6)}</g>`;
+/** a flower head */
+const bloom = (cx, cy, r, petal, heart = "#e8c24a") => Array.from({ length: 5 }, (_, i) => { const a = (i * 2 * Math.PI) / 5; return circ(cx + r * 0.55 * Math.cos(a), cy + r * 0.55 * Math.sin(a), r * 0.5, petal, 0.8); }).join("") + circ(cx, cy, r * 0.35, heart, 0.6);
+/** shower head holes in a disc of radius r */
+const showerHoles = (cx, cy, r) => { let d = ""; for (let y = -r; y <= r; y += 3.5) for (let x = -r; x <= r; x += 3.5) if (x * x + y * y <= r * r) d += `M${(cx + x).toFixed(1)} ${(cy + y).toFixed(1)}h0`; return line(d, K, 1.4); };
+/** round drain grate */
+const drainGrate = (cx, cy, r) => circ(cx, cy, r, "#8d949b", 1.5) + line(Array.from({ length: 3 }, (_, i) => `M${cx - r * 0.6} ${cy + (i - 1) * r * 0.45}H${cx + r * 0.6}`).join(""), K, 1.4);
+/** shower tray w × h falling to a drain at dx, dy */
+const showerTray = (w, h, dx, dy) => withShadow(rect(2, 2, w - 4, h - 4, P.paper, 4)) + rect(8, 8, w - 16, h - 16, "#e9eef0", 3, 1)
+    + line(`M8 8L${dx} ${dy}M${w - 8} 8L${dx} ${dy}M8 ${h - 8}L${dx} ${dy}M${w - 8} ${h - 8}L${dx} ${dy}`, "#c3ccd0", 1) + drainGrate(dx, dy, 6);
+/** a basin set into a vanity top, tap at the wall */
+const vanityBasin = (cx) => `<ellipse cx="${cx}" cy="24" rx="22" ry="13" fill="${P.paper}" ${ol(1.5)}/>` + `<ellipse cx="${cx}" cy="25" rx="16" ry="8" fill="#e9eef0" stroke="none"/>` + circ(cx, 26, 2, P.steel, 1) + rect(cx - 3, 3, 6, 10, P.brass, 1, 1.2);
 const rivets = (pts) => pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="2" fill="${P.brassD}"/>`).join("");
 const gear = (cx, cy, r, teeth, fill) => {
     let d = "";
@@ -58,12 +76,94 @@ const STEAM = [
     ["furniture", "grandfather-clock", "Grandfather clock", 1, 1, () => withShadow(rect(14, 18, 36, 30, P.woodD, 3)) + circ(32, 33, 10, P.paper, 1.5) + line("M32 33V26M32 33L37 35", K, 1.5)],
     ["furniture", "fireplace", "Fireplace", 2, 1, () => withShadow(rect(4, 6, 120, 34, P.brick, 2)) + line("M4 18H124M4 29H124M24 6V18M54 6V18M84 6V18M114 6V18M39 18V29M69 18V29M99 18V29", "#6e3324", 1.2) + path_("M34 40H94V58H34Z", "#2b211a") + path_("M50 56Q56 42 64 50Q70 40 78 56Z", "#f08a2c", 1)],
     ["furniture", "strongbox", "Strongbox", 1, 1, () => withShadow(rect(10, 14, 44, 36, P.wood, 3)) + rect(10, 14, 44, 10, P.woodD, 3) + line("M18 14V50M46 14V50", P.ironD, 4) + rect(28, 28, 8, 9, P.brass, 1, 1.5)],
+    // indoor plants
+    ["decor", "monstera", "Monstera", 1, 1, () => pot(32, 32, 13) + [0, 52, 104, 156, 208, 260, 312].map((a, i) => leaf(32, 32, 27, 13, a, i % 2 ? P.leaf : P.leafL) + `<g transform="translate(32 32) rotate(${a})"><path d="M4 -14L9 -15M4 -20L8 -21M-4 -12L-9 -13M-4 -19L-8 -20" stroke="#2a4a20" stroke-width="1.2"/></g>`).join("")],
+    ["decor", "snake-plant", "Snake plant", 1, 1, () => withShadow(rect(17, 17, 30, 30, "#d8d2c4", 4)) + rect(20, 20, 24, 24, "#5a3c24", 3, 1) + [-60, -25, 10, 40, 75, 115, 150, 200, 240, 290].map((a, i) => leaf(32, 32, 18 + (i % 3) * 4, 3.5, a, i % 2 ? "#4f7a3a" : "#6a8f3e", "#c9b44a")).join(""), { crop: [7, 4, 51, 51] }],
+    ["decor", "fiddle-leaf-fig", "Fiddle-leaf fig", 1, 1, () => pot(32, 32, 12, "#e2d6b8") + [[0, 26], [45, 22], [95, 25], [140, 21], [185, 26], [230, 22], [275, 25], [320, 21], [20, 14], [160, 14], [290, 14]].map(([a, l], i) => leaf(32, 32, l, 9, a, i % 3 ? P.leaf : P.leafD, "#9bbf7a")).join("")],
+    ["decor", "kentia-palm", "Kentia palm", 2, 2, () => pot(64, 64, 18, "#d8d2c4") + [0, 45, 90, 135, 180, 225, 270, 315].map((a, i) => frond(64, 64, 52 + (i % 2) * 8, a + 20)).join("") + circ(64, 64, 5, P.leafD, 1)],
+    ["decor", "succulent", "Succulent", 1, 1, () => pot(32, 32, 12, "#d8d2c4") + Array.from({ length: 9 }, (_, i) => leaf(32, 32, 11, 4.5, i * 40, "#8fb08a", "#6f8f6a")).join("") + Array.from({ length: 5 }, (_, i) => leaf(32, 32, 6, 3, i * 72 + 20, "#a9c7a0", null)).join(""), { crop: [18, 18, 30, 31] }],
+    ["decor", "cactus-pot", "Potted cactus", 1, 1, () => pot(32, 32, 12, "#c97b63") + circ(32, 32, 8, "#5f8a4a", 1.2) + line("M32 24V40M24 32H40M26 26L38 38M38 26L26 38", "#466b37", 1) + line("M32 23.5h0M40.5 32h0M32 40.5h0M23.5 32h0M38 26h0M26 38h0", "#f1ead8", 1.6), { crop: [18, 18, 30, 31] }],
+    ["decor", "trailing-plant", "Trailing pothos", 1, 1, () => pot(32, 22, 11, "#e2d6b8") + [[-14, 0], [-6, 6], [6, 4], [15, -2]].map(([dx, bend], i) => `<path d="M${32 + dx * 0.4} 26Q${32 + dx + bend} 44 ${32 + dx} 62" fill="none" stroke="${P.leafD}" stroke-width="1.2"/>` + [36, 46, 56].map((y, j) => leaf(32 + dx + bend * 0.5 * (j % 2 ? 1 : -1), y, 7, 4, (j % 2 ? 50 : -50) + 180, i % 2 ? P.leafL : P.leaf, null)).join("")).join("")
+        + Array.from({ length: 6 }, (_, i) => leaf(32, 22, 10, 5, i * 60, i % 2 ? P.leaf : P.leafL, null)).join("")],
+    ["decor", "planter-box", "Planter box", 2, 1, () => withShadow(rect(4, 14, 120, 36, P.woodD, 3)) + rect(9, 19, 110, 26, "#5a3c24", 2, 1) + [[18, 30, 9], [34, 26, 8], [50, 34, 9], [68, 28, 10], [86, 34, 8], [102, 27, 9], [112, 36, 6]].map(([x, y, r], i) => circ(x, y, r, [P.leaf, P.leafL, P.leafD][i % 3], 1.2)).join("")
+        + bloom(40, 30, 6, "#d8648a") + bloom(78, 32, 6, "#e8c24a", "#b3261e") + bloom(106, 30, 5, "#f1ead8"), { crop: [1, 11, 127, 44] }],
+    ["decor", "bonsai", "Bonsai", 1, 1, () => withShadow(rect(14, 22, 36, 22, "#3f4f6b", 3)) + rect(17, 25, 30, 16, "#6f6a62", 2, 1) + line("M32 33L26 26M32 33L40 28M32 33L30 38", "#5a3c24", 2.4) + circ(24, 24, 7, P.leafD, 1) + circ(41, 26, 8, P.leaf, 1) + circ(31, 30, 5, P.leafL, 1), { crop: [11, 15, 43, 34] }],
+    // things for tables, desks and cabinets
+    ["decor", "plate", "Plate", 1, 1, () => withShadow(circ(32, 32, 14, P.paper, 1.5)) + circ(32, 32, 9, "#ece4d2", 1), { crop: [16, 16, 34, 35] }],
+    ["decor", "place-setting", "Place setting", 1, 1, () => withShadow(circ(32, 34, 13, P.paper, 1.5)) + circ(32, 34, 8, "#ece4d2", 1) + line("M12 24V46M10 24V29M14 24V29", "#9aa0a8", 1.6) + line("M52 24V46", "#9aa0a8", 2) + circ(48, 16, 5, P.glass, 1), { crop: [8, 9, 47, 43] }],
+    ["decor", "fruit-bowl", "Bowl of fruit", 1, 1, () => withShadow(circ(32, 32, 15, "#e2d6b8", 1.5)) + circ(27, 29, 5.5, "#b3261e", 1) + circ(37, 28, 5, "#e8962e", 1) + circ(33, 37, 5, "#8fb04a", 1) + [[24, 37], [27, 40], [23, 41], [26, 44]].map(([x, y]) => circ(x, y, 2.2, "#6b3a6e", 0.6)).join("") + `<path d="M38 36Q44 38 42 44" fill="none" stroke="#e8c24a" stroke-width="3.5" stroke-linecap="round"/>`, { crop: [15, 15, 36, 37] }],
+    ["decor", "tea-set", "Tea set on a tray", 1, 1, () => withShadow(rect(6, 10, 52, 44, "#c4c9cf", 4)) + circ(26, 28, 9, P.paper, 1.5) + line("M35 28H41", P.paper, 3) + `<path d="M17 24Q11 28 17 32" fill="none" stroke="${K}" stroke-width="1.2"/>` + circ(26, 28, 3, "#e9eef0", 0.8)
+        + circ(46, 22, 5.5, P.paper, 1) + circ(46, 22, 3.5, "#a0632e", 0.6) + circ(44, 42, 5.5, P.paper, 1) + circ(44, 42, 3.5, "#a0632e", 0.6), { crop: [3, 7, 59, 52] }],
+    ["decor", "wine-and-glass", "Wine bottle and glass", 1, 1, () => withShadow(circ(26, 32, 8, "#2f4a2f", 1.5)) + circ(26, 32, 3, "#1e2e1e", 1) + circ(26, 32, 1.8, P.cloth, 0.6) + circ(42, 34, 6, P.glass, 1) + circ(42, 34, 4, "#7a2030", 0.6), { crop: [16, 22, 34, 23] }],
+    ["decor", "candelabra", "Candelabra", 1, 1, () => `<circle cx="32" cy="32" r="22" fill="${P.glow}" opacity=".25"/>` + withShadow(circ(32, 32, 7, P.brass, 1.5)) + line("M14 32H50M32 14V50", P.brass, 2.5) + [[14, 32], [50, 32], [32, 14], [32, 50], [32, 32]].map(([x, y]) => circ(x, y, 3.5, P.paper, 1) + circ(x, y, 1.3, "#e8962e", 0)).join("")],
+    ["decor", "candle", "Candle", 1, 1, () => `<circle cx="32" cy="32" r="12" fill="${P.glow}" opacity=".3"/>` + withShadow(circ(32, 32, 7, P.brass, 1.2)) + circ(32, 32, 4, P.paper, 1) + circ(32, 32, 1.4, "#e8962e", 0), { crop: [19, 19, 26, 26] }],
+    ["decor", "book-stack", "Stack of books", 1, 1, () => withShadow(`<g transform="rotate(-6 32 32)">${rect(16, 20, 32, 24, "#7a2424", 1.5, 1.5)}</g>`) + `<g transform="rotate(5 32 32)">${rect(18, 22, 28, 20, "#2f4a7a", 1.5, 1.5)}</g>` + `<g transform="rotate(-2 32 32)">${rect(20, 24, 24, 17, "#3f6b4a", 1.5, 1.5) + line("M23 29H40M23 33H36", P.brass, 1)}</g>`, { crop: [13, 16, 41, 35] }],
+    ["decor", "open-book", "Open book", 1, 1, () => withShadow(path_("M10 22Q21 18 32 23Q43 18 54 22V44Q43 40 32 45Q21 40 10 44Z", P.paper, 1.5)) + line("M32 23V45", K, 1) + line("M14 27H28M14 31H28M14 35H26M36 27H50M36 31H50M36 35H48", "#a49b88", 1), { crop: [8, 18, 50, 32] }],
+    ["decor", "flat-tv", "Flat TV on a stand", 2, 1, () => withShadow(rect(46, 30, 36, 12, "#3a3a41", 3)) + withShadow(rect(8, 24, 112, 7, "#141418", 1.5, 1.5)) + line("M14 27.5H116", "#3a3a48", 1), { crop: [6, 22, 118, 25] }],
+    ["decor", "wall-tv", "Wall-mounted TV", 2, 1, () => rect(40, 0, 48, 4, "#3a3a41", 1, 1) + withShadow(rect(8, 3, 112, 6, "#141418", 1.5, 1.5)) + line("M14 6H116", "#3a3a48", 1), { crop: [6, 0, 118, 14] }],
+    ["decor", "crt-tv", "Television (old)", 1, 1, () => withShadow(path_("M18 12H46L50 40H14Z", "#5a4632", 1.8)) + line("M23 18H41M22 23H42M21 28H43", "#3e3022", 1.4) + rect(10, 40, 44, 12, "#4a3a2a", 2, 1.8) + rect(14, 42, 26, 8, "#5f7f8f", 2, 1) + line("M17 44.5H24", "#a9c4cf", 1) + circ(46, 46, 2.2, P.brass, 0.8), { crop: [8, 10, 49, 45] }],
+    ["decor", "radio", "Valve radio", 1, 1, () => withShadow(rect(14, 20, 36, 24, P.wood, 6, 1.5)) + rect(18, 24, 18, 16, "#e2d6b8", 3, 1) + line("M20 28H34M20 32H34M20 36H34", "#a49b88", 1) + circ(43, 28, 3, P.brass, 1) + circ(43, 37, 3, P.brass, 1), { crop: [12, 18, 42, 31] }],
+    ["decor", "table-lamp", "Table lamp", 1, 1, () => `<circle cx="32" cy="32" r="20" fill="${P.glow}" opacity=".25"/>` + withShadow(circ(32, 32, 11, "#efe2c0", 1.5)) + circ(32, 32, 7, "#f6ecd2", 0.8) + circ(32, 32, 2, P.brass, 0.8), { crop: [11, 11, 42, 42] }],
+    ["decor", "desk-lamp", "Desk lamp", 1, 1, () => withShadow(circ(22, 42, 7, "#2f4a2f", 1.5)) + line("M22 42L30 28L40 24", P.brass, 2.2) + `<circle cx="44" cy="26" r="10" fill="${P.glow}" opacity=".3"/>` + withShadow(`<ellipse cx="42" cy="24" rx="7" ry="5" fill="#2f4a2f" ${ol(1.2)}/>`), { crop: [13, 15, 42, 39] }],
+    ["decor", "vase-flowers", "Vase of flowers", 1, 1, () => withShadow(circ(32, 32, 8, "#3f6b8a", 1.5)) + leaf(32, 32, 14, 3.5, 200, P.leaf, null) + leaf(32, 32, 14, 3.5, 80, P.leafL, null) + leaf(32, 32, 12, 3.5, 320, P.leaf, null)
+        + bloom(26, 26, 6, "#d8648a") + bloom(38, 27, 6, "#f1ead8") + bloom(33, 37, 6, "#e8962e") + bloom(25, 37, 5, "#b47a9e"), { crop: [16, 16, 34, 34] }],
+    ["decor", "laptop", "Laptop", 1, 1, () => withShadow(rect(14, 26, 36, 22, "#9aa0a8", 2, 1.5)) + rect(14, 20, 36, 7, "#3a3a41", 1.5, 1.5) + rect(18, 29, 28, 10, "#c4c9cf", 1, 0.8) + line("M19 32H45M19 35H45", "#9aa0a8", 1, 'stroke-dasharray="2 1"') + rect(27, 41, 10, 5, "#b0b5bb", 1, 0.6), { crop: [12, 18, 42, 35] }],
+    ["decor", "telephone", "Telephone", 1, 1, () => withShadow(rect(18, 22, 28, 22, "#1e1e22", 5, 1.5)) + rect(16, 18, 32, 7, "#2b2b30", 3, 1.2) + circ(32, 36, 7, P.paper, 1) + circ(32, 36, 2.5, "#1e1e22", 0) + Array.from({ length: 10 }, (_, i) => { const a = (i * Math.PI) / 6 - Math.PI / 2; return `<circle cx="${(32 + 5 * Math.cos(a)).toFixed(1)}" cy="${(36 + 5 * Math.sin(a)).toFixed(1)}" r="0.9" fill="${K}"/>`; }).join(""), { crop: [14, 16, 36, 33] }],
+    ["decor", "mantel-clock", "Mantel clock", 1, 1, () => withShadow(rect(16, 24, 32, 14, P.woodD, 4, 1.5)) + circ(32, 26, 8, P.brass, 1.2) + circ(32, 26, 6, P.paper, 0.8) + line("M32 26V22M32 26L35 27", K, 1), { crop: [14, 16, 38, 27] }],
+    ["decor", "globe", "Globe", 1, 1, () => withShadow(circ(32, 32, 13, P.brass, 1.5)) + circ(32, 32, 11, "#4f7fa0", 1) + path_("M25 24Q30 22 32 27Q29 31 25 30Z", "#8fa86a", 0.8) + path_("M34 33Q40 31 41 36Q37 41 34 38Z", "#8fa86a", 0.8) + line("M21 32H43", "#2f5a78", 0.6), { crop: [17, 17, 32, 33] }],
+    ["decor", "chessboard", "Chessboard", 1, 1, () => withShadow(rect(12, 12, 40, 40, P.woodD, 1, 1.5)) + Array.from({ length: 64 }, (_, i) => (i + Math.floor(i / 8)) % 2 ? `<rect x="${14 + (i % 8) * 4.5}" y="${14 + Math.floor(i / 8) * 4.5}" width="4.5" height="4.5" fill="#efe2c0"/>` : "").join("")
+        + [[16, 16], [25, 16], [34, 16], [43, 16], [20, 20], [29, 20]].map(([x, y]) => circ(x + 0.5, y + 0.5, 1.6, "#1e1e22", 0.4)).join("") + [[16, 47], [25, 47], [38, 47], [47, 43], [29, 43]].map(([x, y]) => circ(x + 0.5, y + 0.5, 1.6, "#f6f1e6", 0.4)).join(""), { crop: [10, 10, 46, 46] }],
+    ["decor", "mug", "Mug", 1, 1, () => withShadow(circ(30, 32, 7, "#c97b63", 1.5)) + circ(30, 32, 5, "#4a2e1c", 0.6) + `<path d="M37 29Q42 32 37 35" fill="none" stroke="${K}" stroke-width="1.5"/>`, { crop: [21, 23, 21, 21] }],
+    ["decor", "decanter-tray", "Decanter and glasses", 1, 1, () => withShadow(rect(8, 12, 48, 40, "#c4c9cf", 3)) + circ(24, 32, 9, P.glass, 1.5) + circ(24, 32, 6, "#b5793a", 0.8) + circ(24, 32, 2.5, P.glass, 0.8) + [[42, 22], [46, 34], [40, 44]].map(([x, y]) => circ(x, y, 4, P.glass, 1) + circ(x, y, 2.3, "#b5793a", 0.5)).join(""), { crop: [5, 9, 55, 48] }],
+    // rugs
+    ["rugs", "rug-round", "Round rug", 2, 2, () => circ(64, 64, 58, "#6b2f3a", 2) + circ(64, 64, 50, "#d9c49a", 1) + circ(64, 64, 40, "#6b2f3a", 1) + circ(64, 64, 30, "#2f4a5a", 1) + Array.from({ length: 12 }, (_, i) => { const a = (i * Math.PI) / 6; return circ(64 + 45 * Math.cos(a), 64 + 45 * Math.sin(a), 3, "#6b2f3a", 0.6); }).join("") + circ(64, 64, 10, "#d9c49a", 1)],
+    ["rugs", "rug-braided", "Braided oval rug", 3, 2, () => [[90, 58, "#7a4a3a"], [80, 50, "#b5793a"], [70, 42, "#5d6b4a"], [60, 34, "#8e2f2f"], [50, 26, "#b5793a"], [40, 18, "#5d6b4a"], [30, 10, "#7a4a3a"]].map(([rx, ry, c]) => `<ellipse cx="96" cy="64" rx="${rx}" ry="${ry}" fill="${c}" stroke="#3a2a1e" stroke-width="1" stroke-dasharray="3 2"/>`).join("")],
+    ["rugs", "rug-runner", "Hall runner", 1, 3, () => rect(6, 4, 52, 184, "#7a2424", 2, 1.5) + rect(12, 10, 40, 172, "#d9c49a", 0, 1) + rect(16, 14, 32, 164, "#2f4a5a", 0, 1) + [40, 72, 104, 136, 168].map((y) => path_(`M32 ${y - 14}L44 ${y}L32 ${y + 14}L20 ${y}Z`, "#b5793a", 1) + circ(32, y, 3, "#7a2424", 0.6)).join("") + line("M10 4V0M18 4V0M26 4V0M34 4V0M42 4V0M50 4V0M10 188V192M18 188V192M26 188V192M34 188V192M42 188V192M50 188V192", P.cloth, 1.5)],
+    ["rugs", "rug-kilim", "Kilim rug", 2, 3, () => rect(6, 6, 116, 180, "#b5793a", 1, 1.5) + [0, 1, 2, 3, 4].map((i) => { const y = 16 + i * 34; return rect(6, y, 116, 22, ["#8e2f2f", "#2f4a5a", "#3f6b4a", "#8e2f2f", "#2f4a5a"][i], 0, 0) + line(`M6 ${y + 11}${Array.from({ length: 10 }, (_, j) => `L${6 + j * 11.6 + 5.8} ${y + (j % 2 ? 4 : 18)}`).join("")}L122 ${y + 11}`, "#efe2c0", 2); }).join("") + rect(6, 6, 116, 180, "none", 1, 1.5)],
+    ["rugs", "rug-geometric", "Modern geometric rug", 2, 2, () => rect(6, 6, 116, 116, "#e8e2d4", 2, 1.5) + path_("M6 6L64 64L6 122Z", "#3f5f6b", 0) + path_("M122 6L64 64L122 122Z", "#c97b63", 0) + path_("M6 6H122L64 64Z", "#d9b45a", 0) + path_("M40 86H88L64 122H40Z", "#2f3a42", 0) + rect(6, 6, 116, 116, "none", 2, 1.5)],
+    ["rugs", "rug-shag", "Shag rug", 2, 2, () => rect(10, 10, 108, 108, "#e6dfcf", 14, 0) + `<rect x="10" y="10" width="108" height="108" rx="14" fill="none" stroke="#cfc6b2" stroke-width="6" stroke-dasharray="1 3" stroke-linecap="round"/>` + Array.from({ length: 70 }, (_, i) => { const x = 18 + ((i * 37) % 92), y = 18 + ((i * 53) % 92); return `<path d="M${x} ${y}l${(i % 3) - 1} 3" stroke="#d2c9b4" stroke-width="1.6" stroke-linecap="round"/>`; }).join("")],
+    ["rugs", "rug-hide", "Animal hide rug", 2, 2, () => path_("M40 14Q64 4 88 14L100 8L104 26Q120 40 114 64Q120 88 104 102L100 120L88 114Q64 124 40 114L28 120L24 102Q8 88 14 64Q8 40 24 26L28 8Z", "#f1ead8", 1.5) + path_("M44 34Q58 28 62 42Q56 56 42 50Z", "#3a2a1e", 0) + path_("M76 58Q92 52 96 66Q90 80 74 74Z", "#3a2a1e", 0) + path_("M38 76Q50 72 52 84Q46 94 36 88Z", "#3a2a1e", 0) + path_("M70 26Q80 22 84 30Q80 38 70 34Z", "#3a2a1e", 0)],
+    ["rugs", "rug-persian-blue", "Persian rug (blue)", 3, 2, () => rect(6, 6, 180, 116, "#2a3f66", 2) + rect(16, 16, 160, 96, "#d9c49a", 0, 1.5) + rect(24, 24, 144, 80, "#3d5a8a", 0, 1.5) + path_("M96 34L146 64L96 94L46 64Z", "#d9c49a", 1.5) + path_("M96 46L126 64L96 82L66 64Z", "#8e2f2f", 1) + circ(96, 64, 6, "#d9c49a", 1)
+        + [[34, 34], [158, 34], [34, 94], [158, 94]].map(([x, y]) => circ(x, y, 5, "#8e2f2f", 1)).join("") + line("M6 14V114M186 14V114", P.cloth, 3, 'stroke-dasharray="2 4"')],
+    ["rugs", "rug-striped", "Striped rug", 3, 2, () => rect(6, 10, 180, 108, "#e8e2d4", 2, 1.5) + [0, 1, 2, 3, 4, 5, 6, 7].map((i) => rect(6 + 14 + i * 20, 10, 8, 108, ["#3f5f6b", "#c97b63", "#d9b45a"][i % 3], 0, 0)).join("") + rect(6, 10, 180, 108, "none", 2, 1.5)],
+    ["rugs", "rug-checker", "Checked rug", 2, 2, () => rect(8, 8, 112, 112, "#3a3a41", 2, 1.5) + Array.from({ length: 49 }, (_, i) => ((i % 7) + Math.floor(i / 7)) % 2 ? `<rect x="${14 + (i % 7) * 14.3}" y="${14 + Math.floor(i / 7) * 14.3}" width="14.3" height="14.3" fill="#d9c49a"/>` : `<rect x="${14 + (i % 7) * 14.3}" y="${14 + Math.floor(i / 7) * 14.3}" width="14.3" height="14.3" fill="#7a2424"/>`).join("") + rect(14, 14, 100, 100, "none", 0, 1)],
+    ["rugs", "rug-sheepskin", "Sheepskin", 1, 1, () => `<path d="M18 10Q32 4 46 10Q56 20 52 32Q58 44 46 54Q32 60 18 54Q6 44 12 32Q6 20 18 10Z" fill="#f6f1e6" stroke="#cfc6b2" stroke-width="3" stroke-dasharray="1.5 2.5" stroke-linecap="round"/>`
+        + Array.from({ length: 24 }, (_, i) => `<path d="M${16 + ((i * 29) % 32)} ${14 + ((i * 17) % 38)}q2 1 1 3" fill="none" stroke="#e2d9c6" stroke-width="1.2" stroke-linecap="round"/>`).join(""), { crop: [7, 4, 50, 56] }],
     ["furniture", "potted-plant", "Potted fern", 1, 1, () => withShadow(circ(32, 34, 14, P.copper)) + [0, 1, 2, 3, 4, 5, 6, 7].map((i) => { const a = (i * Math.PI) / 4; return path_(`M32 34Q${32 + 18 * Math.cos(a + 0.4)} ${34 + 18 * Math.sin(a + 0.4)} ${32 + 26 * Math.cos(a)} ${34 + 26 * Math.sin(a)}Q${32 + 12 * Math.cos(a - 0.3)} ${34 + 12 * Math.sin(a - 0.3)} 32 34Z`, i % 2 ? P.leaf : P.leafL, 1.2); }).join("")],
     ["furniture", "side-table-lamp", "Side table with oil lamp", 1, 1, () => withShadow(circ(32, 32, 22, P.wood)) + circ(32, 32, 11, P.brass, 2) + circ(32, 32, 6, P.glow, 1)],
     // kitchen & bath
     ["kitchen", "stove", "Cast-iron stove", 1, 1, () => withShadow(rect(6, 8, 52, 48, P.ironD, 4)) + circ(20, 22, 7, P.iron, 1.5) + circ(44, 22, 7, P.iron, 1.5) + circ(20, 42, 7, P.iron, 1.5) + circ(44, 42, 7, "#a33a1d", 1.5) + rect(26, 0, 12, 10, P.ironD, 1, 2)],
     ["kitchen", "washstand", "Washstand", 1, 1, () => withShadow(rect(6, 14, 52, 38, P.woodL, 3)) + `<ellipse cx="32" cy="33" rx="17" ry="12" fill="${P.paper}" ${ol(1.5)}/>` + `<ellipse cx="32" cy="33" rx="11" ry="7" fill="${P.glass}" stroke="none"/>` + rect(29, 14, 6, 9, P.brass, 1, 1.5)],
     ["kitchen", "bathtub", "Clawfoot bathtub", 1, 2, () => withShadow(rect(6, 8, 52, 112, P.paper, 24)) + rect(13, 18, 38, 92, P.glass, 18, 1.5) + rect(28, 10, 8, 10, P.brass, 2, 1.5)],
+    // bathroom: wall-mounted things have the wall along their top edge
+    ["kitchen", "rain-shower-head", "Rain shower head", 1, 1, () => rect(29, 0, 6, 18, P.steel, 1, 1.5) + withShadow(circ(32, 32, 17, P.steel, 2)) + circ(32, 32, 13, "#c4c9cf", 1)
+        + showerHoles(32, 32, 10), { crop: [13, 0, 40, 54] }],
+    ["kitchen", "shower-head", "Shower head (wall)", 1, 1, () => rect(24, 0, 16, 5, P.steel, 1, 1.5) + rect(29, 4, 6, 12, P.steel, 1, 1.5) + withShadow(circ(32, 22, 9, P.steel, 1.5)) + showerHoles(32, 22, 5), { crop: [21, 0, 24, 36] }],
+    ["kitchen", "hand-shower", "Hand shower and hose", 1, 1, () => rect(24, 0, 16, 6, P.steel, 1, 1.5) + line("M32 6C6 26 60 30 40 44", "#8d949b", 3) + withShadow(`<ellipse cx="40" cy="52" rx="7" ry="9" fill="${P.steel}" ${ol(1.5)}/>`) + showerHoles(40, 52, 4), { crop: [22, 0, 29, 66] }],
+    ["kitchen", "shower-mixer", "Shower mixer", 1, 1, () => rect(18, 0, 28, 8, P.steel, 2, 1.5) + circ(24, 12, 5, P.steel, 1.5) + circ(40, 12, 5, P.steel, 1.5) + line("M24 12L24 7M40 12L44 8", K, 1.5), { crop: [16, 0, 32, 19] }],
+    ["kitchen", "shower-base", "Shower base", 1, 1, () => showerTray(64, 64, 32, 32)],
+    ["kitchen", "shower-tray-long", "Shower tray (long)", 2, 1, () => showerTray(128, 64, 108, 32)],
+    ["kitchen", "shower-base-large", "Walk-in shower base", 2, 2, () => showerTray(128, 128, 64, 64)],
+    ["kitchen", "shower-quadrant", "Corner shower (quadrant)", 2, 2, () => withShadow(path_("M4 4H124A120 120 0 0 1 4 124Z", P.paper)) + path_("M10 10H112A102 102 0 0 1 10 112Z", "#e9eef0", 1)
+        + line("M10 10L40 40M112 10L48 36M10 112L36 48", "#b9c4c8", 1) + drainGrate(40, 40, 6) + `<path d="M124 4A120 120 0 0 1 4 124" fill="none" stroke="${P.glass}" stroke-width="5" opacity=".85"/>` + `<path d="M124 4A120 120 0 0 1 4 124" fill="none" stroke="#5b7d88" stroke-width="1.2"/>`],
+    ["kitchen", "floor-drain", "Floor drain", 1, 1, () => drainGrate(32, 32, 11), { crop: [19, 19, 26, 26] }],
+    ["kitchen", "linear-drain", "Linear drain", 2, 1, () => rect(6, 25, 116, 14, "#8d949b", 2, 1.5) + line("M12 32H116", K, 4, 'stroke-dasharray="2 6"'), { crop: [4, 23, 120, 18] }],
+    ["kitchen", "towel-rail", "Towel rail", 1, 1, () => rect(6, 0, 6, 9, P.steel, 1, 1.5) + rect(52, 0, 6, 9, P.steel, 1, 1.5) + line("M9 7H55", "#8d949b", 3)
+        + withShadow(rect(14, 4, 36, 12, "#7fa7b8", 2, 1.5)) + line("M14 13H50", "#5d8798", 1.2), { crop: [4, 0, 56, 21] }],
+    ["kitchen", "heated-towel-rail", "Heated towel rail", 1, 1, () => rect(5, 0, 6, 12, "#d6d8db", 1, 1.5) + rect(53, 0, 6, 12, "#d6d8db", 1, 1.5) + rect(8, 6, 48, 6, "#e4e6e8", 2, 1.5)
+        + line("M16 9H48", "#a7acb2", 1, 'stroke-dasharray="1 5"') + withShadow(rect(20, 4, 24, 14, "#c97b63", 2, 1.5)), { crop: [3, 0, 58, 23] }],
+    ["kitchen", "towel-hooks", "Towel hooks", 1, 1, () => [16, 32, 48].map((x) => circ(x, 4, 3, P.brass, 1.2)).join("") + withShadow(rect(26, 6, 12, 20, "#7fa7b8", 4, 1.5)) + withShadow(rect(42, 6, 12, 16, "#e2d6b8", 4, 1.5)), { crop: [11, 0, 47, 31] }],
+    ["kitchen", "vanity", "Vanity unit", 2, 1, () => withShadow(rect(4, 2, 120, 46, P.woodL, 3)) + rect(4, 2, 120, 40, P.stone, 3, 1.5) + vanityBasin(64), { crop: [1, 0, 127, 53] }],
+    ["kitchen", "vanity-double", "Double vanity unit", 3, 1, () => withShadow(rect(4, 2, 184, 46, P.woodL, 3)) + rect(4, 2, 184, 40, P.stone, 3, 1.5) + vanityBasin(52) + vanityBasin(140), { crop: [1, 0, 191, 53] }],
+    ["kitchen", "vessel-basin", "Vessel basin", 1, 1, () => withShadow(rect(2, 2, 60, 42, P.stone, 2)) + withShadow(circ(32, 26, 14, P.paper, 2)) + circ(32, 26, 9, "#e9eef0", 1) + circ(32, 26, 2, P.steel, 1) + rect(29, 2, 6, 9, P.brass, 1, 1.2), { crop: [-1, 0, 67, 49] }],
+    ["kitchen", "wall-mirror", "Wall mirror", 1, 1, () => rect(4, 0, 56, 9, P.brass, 2, 1.5) + rect(7, 2, 50, 5, P.glass, 1, 1) + line("M12 4L18 4", "#ffffff", 1.2), { crop: [2, 0, 60, 11] }],
+    ["kitchen", "mirror-cabinet", "Mirror cabinet", 1, 1, () => withShadow(rect(4, 0, 56, 14, P.woodL, 2)) + rect(7, 3, 24, 8, P.glass, 1, 1) + rect(33, 3, 24, 8, P.glass, 1, 1), { crop: [1, 0, 63, 19] }],
+    ["kitchen", "toiletries", "Toiletries", 1, 1, () => `<ellipse cx="18" cy="16" rx="10" ry="7" fill="${P.paper}" ${ol(1.2)}/>` + `<ellipse cx="18" cy="16" rx="6" ry="4" fill="#e8d6a8" ${ol(1)}/>`
+        + circ(40, 14, 6, "#6b8f71", 1.2) + circ(52, 18, 5, "#b47a9e", 1.2) + circ(40, 34, 7, P.glass, 1.2) + line("M38 30L36 22M42 30L45 23", P.red, 1.5), { crop: [4, 4, 56, 40] }],
+    ["kitchen", "bath-mat", "Bath mat", 2, 1, () => rect(10, 12, 108, 40, "#7fa7b8", 6, 1.5) + line("M18 20H110M18 44H110", "#e8f0f2", 2) + line("M10 22v0M10 32v0M10 42v0M118 22v0M118 32v0M118 42v0", "#5d8798", 3), { crop: [7, 10, 114, 44] }],
+    ["kitchen", "laundry-basket", "Laundry basket", 1, 1, () => withShadow(circ(32, 32, 20, P.woodL, 2)) + circ(32, 32, 15, "#a87a48", 1) + line("M17 32H47M32 17V47M21 21L43 43M43 21L21 43", "#8a6238", 1) + rect(22, 24, 14, 10, "#e2d6b8", 3, 1), { crop: [10, 10, 46, 47] }],
+    ["kitchen", "toilet", "Toilet (modern)", 1, 1, () => withShadow(rect(14, 2, 36, 13, P.paper, 3)) + circ(32, 8, 2.5, P.steel, 1) + withShadow(`<ellipse cx="32" cy="37" rx="14" ry="18" fill="${P.paper}" ${ol(2)}/>`) + `<ellipse cx="32" cy="39" rx="8" ry="11" fill="#e9eef0" stroke="none"/>`, { crop: [11, 0, 43, 60] }],
+    ["kitchen", "toilet-roll", "Toilet roll holder", 1, 1, () => rect(20, 0, 24, 4, P.steel, 1, 1.2) + withShadow(rect(22, 3, 20, 12, "#f4f1ea", 3, 1.2)) + line("M24 9H40", "#d8d2c4", 1), { crop: [18, 0, 28, 20] }],
     ["kitchen", "water-closet", "Water closet", 1, 1, () => withShadow(rect(14, 4, 36, 14, P.woodD, 2)) + `<ellipse cx="32" cy="38" rx="15" ry="18" fill="${P.paper}" ${ol(2)}/>` + `<ellipse cx="32" cy="40" rx="9" ry="11" fill="${P.glass}" stroke="none"/>` + line("M50 10L58 4", P.brass, 2)],
     ["kitchen", "counter", "Kitchen counter", 2, 1, () => withShadow(rect(4, 12, 120, 40, P.stone, 2)) + line("M44 12V52M84 12V52", P.stoneD, 1.5) + rect(56, 20, 20, 14, P.woodL, 2, 1.2) + circ(104, 30, 7, P.copper, 1.5)],
     // workshop & machinery
@@ -241,12 +341,30 @@ function pipePiece(st, piece) {
     return "";
 }
 
+const SLIDING_DOORS = [
+    ["sliding-door", "Sliding door", 64], ["double-sliding-door", "Double sliding door", 128], ["glass-sliding-door", "Glass sliding door", 128, { material: "steel" }],
+    ["pocket-door", "Pocket door", 64], ["double-pocket-door", "Double pocket door", 128], ["barn-door", "Barn door", 64],
+];
 function buildSteampunk() {
     const out = [];
     const svgOf = (w, h, body) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w * 64} ${h * 64}" width="${w * 64}" height="${h * 64}">${body}</svg>\n`;
-    for (const [group, id, name, w, h, draw, extra = {}] of STEAM) {
+    for (const [group, id, name, w, h, draw, { crop, ...extra } = {}] of STEAM) {
+        // crop [x, y, w, h]: the stamp is only that part of its squares (things much smaller than a square, like a
+        // mirror on the wall, get a box that fits them)
+        if (crop) {
+            const [cx, cy, cw, ch] = crop;
+            write(`steampunk/${id}.svg`, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${cx} ${cy} ${cw} ${ch}" width="${cw}" height="${ch}">${draw()}</svg>\n`);
+            out.push({ group, id, name, w: cw / 64, h: ch / 64, ...extra });
+            continue;
+        }
         write(`steampunk/${id}.svg`, svgOf(w, h, draw()));
         out.push({ group, id, name, w, h, ...extra });
+    }
+    // sliding doors, drawn like the opening tool draws them (wood, for an opening of 1 or 2 squares)
+    for (const [id, name, L, extra] of SLIDING_DOORS) {
+        const d = doorStamp(id, L, 64, extra?.material ?? "wood");
+        write(`steampunk/${id}.svg`, `${d.svg}\n`);
+        out.push({ group: "doors", id, name, w: d.w / 64, h: d.h / 64 });
     }
     for (const [id, name, w, h, draw, ports] of PLANT) {
         write(`steampunk/${id}.svg`, svgOf(w, h, draw()));
@@ -338,7 +456,7 @@ const GROUPS = [
     ["wetland", "Wetland & grass", "freeform"], ["volcanoes", "Volcanoes", "freeform"], ["settlements", "Settlements", "freeform"], ["buildings", "Buildings & landmarks", "freeform"],
     ["water", "Water & coast", "freeform"], ["steam-landmarks", "Steampunk landmarks", "freeform"], ["markers", "Markers & symbols", "both"], ["monsters", "Monsters", "both"],
     // square grid
-    ["furniture", "Furniture", "grid"], ["kitchen", "Kitchen & bath", "grid"], ["machines", "Workshop & machinery", "grid"], ["pipes", "Pipes & valves", "grid"], ["pipework", "Pipework (snaps together)", "grid"], ["plant", "Mechanical plant", "grid"],
+    ["furniture", "Furniture", "grid"], ["decor", "Plants & decor", "grid"], ["rugs", "Rugs", "grid"], ["kitchen", "Kitchen & bath", "grid"], ["machines", "Workshop & machinery", "grid"], ["pipes", "Pipes & valves", "grid"], ["pipework", "Pipework (snaps together)", "grid"], ["plant", "Mechanical plant", "grid"],
     ["services", "Fire escapes & building services", "grid"], ["appliances", "White goods", "grid"], ["waste", "Bins & dumpsters", "grid"],
     ["containers", "Crates & barrels", "grid"], ["street", "Street furniture", "grid"], ["vehicles", "Vehicles", "grid"], ["bridges", "Bridges", "grid"],
     ["doors", "Doors, windows & stairs", "grid"], ["nature", "Nature (top-down)", "grid"],
@@ -383,5 +501,7 @@ const icons = giDir ? buildGameIcons(giDir)
 const authors = fs.existsSync(path.join(ROOT, "game-icons/authors.json")) ? JSON.parse(fs.readFileSync(path.join(ROOT, "game-icons/authors.json"), "utf8")) : {};
 const m = manifest(steam, icons);
 m.credits = { gameIconsAuthors: Object.keys(authors).sort() };
+// changes with every build, so the editor asks for fresh stamp images (it adds it to their addresses)
+m.version = Date.now().toString(36);
 write("manifest.json", `${JSON.stringify(m)}\n`);
 console.log(`${m.stamps.length} stamps in ${m.groups.length} groups`);

@@ -11,13 +11,15 @@ import {
     CELL, TERRAINS, BACKDROPS, PATH_STYLES, TEXT_STYLES, newMap, uid, viewLayers, layerSvg, backgroundSvg, gridSvg,
     textureCatalog, texturesDefs, texturePreview, resolveTexture, usedFloors, DETAILS, DETAIL_COLORS, detailRows, bounds, textureTileSvg, TILE_PX,
     floorSvg, moveObject, pathD, unitsPerPx, layerParts, objectSvg, sampleCurve, RIBBONS, RIBBON_PARTS,
-    toRoom, fromRoom, inRoom, worldRoom, allObjects, anchorOf, rehome, touchesBox, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg,
+    toRoom, fromRoom, inRoom, worldRoom, allObjects, anchorOf, rehome, touchesBox, insideBox, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg, isWallShape, flipObject, turnObject, objectFloors, windowStampSrc, doorStamp, DOOR_MATERIALS, fitStampBox,
 } from "./map-core.js";
 
 const html = htm.bind(h);
 // texture catalogue for menus (built-ins + derived textures); the editor refreshes it when the library loads
 let TEX = textureCatalog();
-const TEX_GROUPS = ["Outdoor", "Street", "Water", "Indoor", "Roof", "Map", "My textures"];
+const TEX_ORDER = ["Outdoor", "Street", "Water", "Indoor", "Carpet", "Roof", "Map", "My textures"];
+/** texture groups in menu order; groups not in TEX_ORDER come before "My textures", so none is ever left out */
+const texGroups = () => { const all = [...new Set(Object.values(TEX).map((f) => f.group))]; return [...TEX_ORDER.slice(0, -1), ...all.filter((g) => !TEX_ORDER.includes(g)), "My textures"].filter((g) => all.includes(g)); };
 let TEX_CUSTOM = {}; // the derived textures TEX was made from (for previews)
 
 // ------------------------------------------------------------------ pickers
@@ -25,7 +27,16 @@ let TEX_CUSTOM = {}; // the derived textures TEX was made from (for previews)
 // picks, Confirm or a double click applies, Escape cancels; then focus goes back to the map (or to the button, inside
 // another dialog). Options: [{value, label, group?, img? (url), svg? (markup)}]
 let focusCanvas = null; // set by the map editor
-const texChoices = (lead = []) => [...lead, ...TEX_GROUPS.flatMap((g) => Object.entries(TEX).filter(([, f]) => f.group === g).map(([k, f]) => ({ value: k, label: f.name, group: g, img: texPreviewUrl(k, TEX_CUSTOM) })))];
+/**
+ * An input that saves on change (Enter or leaving it) and keeps what you typed until then. A plain controlled input
+ * gets its old value written back by any re-render in between (moving the pointer over the map re-renders).
+ */
+function Draft({ value, onChange, onBlur, ...props }) {
+    const [draft, setDraft] = useState(null);
+    return h("input", { ...props, value: draft ?? value ?? "", onInput: (e) => setDraft(e.target.value),
+        onChange: (e) => { onChange?.(e); setDraft(null); }, onBlur: (e) => { setDraft(null); onBlur?.(e); } });
+}
+const texChoices = (lead = []) => [...lead, ...texGroups().flatMap((g) => Object.entries(TEX).filter(([, f]) => f.group === g).map(([k, f]) => ({ value: k, label: f.name, group: g, img: texPreviewUrl(k, TEX_CUSTOM) })))];
 /** a small drawing of a line style */
 const strokeSvg = (st) => (st ? `<svg viewBox="0 0 120 28" width="120" height="28">${st.layers.map((l) => `<path d="M6 20C34 4 70 26 114 9" fill="none" stroke="${l.c}" stroke-width="${Math.min(l.w, 14)}"${l.dash ? ` stroke-dasharray="${l.dash}"` : ""} stroke-linecap="${l.cap ?? "butt"}"${l.opacity ? ` opacity="${l.opacity}"` : ""}/>`).join("")}</svg>` : "");
 const styleChoices = (styles, lead = []) => [...lead, ...styles.map(([k, st]) => ({ value: k, label: st.name, svg: strokeSvg(st) }))];
@@ -90,8 +101,13 @@ const linkName = (v) => String(v ?? "").replace(/^\[\[|\]\]$/g, "").split("|")[0
 // ------------------------------------------------------------------ stamp library (built-in manifest + vault stamps)
 
 let manifestPromise = null;
-const loadManifest = () => (manifestPromise ??= fetch("/stamps/manifest.json").then((r) => r.json()));
+let stampVersion = "";
+const loadManifest = () => (manifestPromise ??= fetch("/stamps/manifest.json").then((r) => r.json()).then((m) => { stampVersion = m.version ?? ""; return m; }));
+/** a stamp's src as saved in maps (a plain path) */
 const stampSrc = (s) => s.src ?? `/stamps/${s.file}`;
+/** the address to show a src at: built-in stamps carry the manifest's build version, so a rebuilt stamp is never shown
+ * from an old cached copy (in the size the new manifest gives it) */
+const viewSrc = (src) => (stampVersion && src?.startsWith("/stamps/") ? `${src}?v=${stampVersion}` : src);
 const aspects = new Map(); // src -> h / w
 function aspectOf(src) {
     if (aspects.has(src)) return Promise.resolve(aspects.get(src));
@@ -99,11 +115,70 @@ function aspectOf(src) {
         const img = new Image();
         img.onload = () => { const a = img.naturalWidth ? img.naturalHeight / img.naturalWidth : 1; aspects.set(src, a); res(a); };
         img.onerror = () => res(1);
-        img.src = src;
+        img.src = viewSrc(src);
     });
 }
+/**
+ * The part of a stamp's image that has the picture in it ([x, y, w, h], fractions of the image), measured once per
+ * image from its transparency; null when the picture fills the image anyway. Placed stamps get a box that fits it.
+ */
+const trims = new Map(), trimDone = new Map();
+let canMeasure;
+function trimOf(src) {
+    // (without a canvas to draw on there is nothing to measure)
+    canMeasure ??= (() => { try { return !!document.createElement("canvas").getContext("2d"); } catch { return false; } })();
+    if (!canMeasure) return Promise.resolve(null);
+    if (!trims.has(src)) trims.set(src, new Promise((res) => {
+        let over = false;
+        const done = (t) => { if (over) return; over = true; trimDone.set(src, t); res(t); };
+        // an image that never loads leaves the stamp's box as it is
+        setTimeout(() => done(null), 1500);
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const W = 256, H = Math.max(1, Math.round((W * (img.naturalHeight || 1)) / (img.naturalWidth || 1)));
+                const c = document.createElement("canvas");
+                c.width = W; c.height = H;
+                const g = c.getContext("2d", { willReadFrequently: true });
+                g.drawImage(img, 0, 0, W, H);
+                const d = g.getImageData(0, 0, W, H).data;
+                let x0 = W, y0 = H, x1 = -1, y1 = -1;
+                for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (d[(y * W + x) * 4 + 3] > 10) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+                if (x1 < 0) return done(null);
+                // a pixel of room on each side, and nothing to do when the picture already fills the image
+                x0 = Math.max(0, x0 - 1); y0 = Math.max(0, y0 - 1); x1 = Math.min(W - 1, x1 + 1); y1 = Math.min(H - 1, y1 + 1);
+                const t = [x0 / W, y0 / H, (x1 + 1 - x0) / W, (y1 + 1 - y0) / H];
+                done(t[2] > 0.97 && t[3] > 0.97 ? null : t);
+            } catch { done(null); }
+        };
+        img.onerror = () => done(null);
+        img.src = viewSrc(src);
+    }));
+    return trims.get(src);
+}
+/** a stamp with its box fitted to its picture (when that is measured already, or `t` is given) */
+const fitted = (o, t = trimDone.get(o.src)) => (t ? fitStampBox(o, t) : o);
+/** What the opening tool puts in a wall. Doors are drawn for their opening (`doorStamp`: swing or slide inside the
+ * stamp, the wall line through its middle, made of opt.doorMaterial); `file` is the library stamp of that door, so
+ * older maps' copies still count as doors. Windows are drawn for their width too (`windowStampSrc`): one box deep
+ * however wide, about one pane per half box unless chosen with Q / E (opt.openPanes). */
+const WALL_FITTINGS = {
+    door: { name: "Door", file: "door-swing", draw: true },
+    "double-door": { name: "Double door", file: "double-door-swing", draw: true },
+    "sliding-door": { name: "Sliding door", file: "sliding-door", draw: true },
+    "double-sliding-door": { name: "Double sliding door", file: "double-sliding-door", draw: true },
+    "glass-sliding-door": { name: "Glass sliding door", file: "glass-sliding-door", draw: true, panels: true },
+    "pocket-door": { name: "Pocket door", file: "pocket-door", draw: true },
+    "double-pocket-door": { name: "Double pocket door", file: "double-pocket-door", draw: true },
+    "barn-door": { name: "Barn door", file: "barn-door", draw: true },
+    window: { name: "Window", file: "window", panes: true },
+};
+const MAX_PANES = 32;
+const autoPanes = (len, B) => Math.max(1, Math.min(MAX_PANES, Math.round(len / (B / 2))));
+// the stamps the opening tool puts in walls (and older maps' door stamps)
+const DOOR_STAMP = new RegExp(`/stamps/steampunk/(${[...Object.values(WALL_FITTINGS).map((f) => f.file), "door", "double-door"].join("|")})\\.svg$`);
 const moveShape = (sh, dx, dy) => (sh.shape === "poly" ? { ...sh, pts: sh.pts.map(([x, y]) => [x + dx, y + dy]) }
-    : sh.shape === "circle" || sh.op === "open" ? { ...sh, cx: sh.cx + dx, cy: sh.cy + dy } : { ...sh, x: sh.x + dx, y: sh.y + dy });
+    : sh.shape === "circle" || isWallShape(sh) ? { ...sh, cx: sh.cx + dx, cy: sh.cy + dy } : { ...sh, x: sh.x + dx, y: sh.y + dy });
 // painted room squares follow when the room's edge moves by whole boxes
 const shiftCells = (cells, dx, dy, B) => {
     const cx = Math.round(dx / B), cy = Math.round(dy / B);
@@ -286,6 +361,27 @@ function simplify(pts, tol) {
     if (max <= tol) return [a, b];
     return [...simplify(pts.slice(0, idx + 1), tol).slice(0, -1), ...simplify(pts.slice(idx), tol)];
 }
+// resize handles: direction from the centre per handle (corners and sides)
+const RESIZE_DIRS = { nw: [-1, -1], n: [0, -1], ne: [1, -1], e: [1, 0], se: [1, 1], s: [0, 1], sw: [-1, 1], w: [-1, 0] };
+const RESIZE_CURSORS = ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"];
+/** resize cursor for a handle on an object turned by rot degrees */
+const resizeCursor = ([dx, dy], rot = 0) => RESIZE_CURSORS[((Math.round(((Math.atan2(dy, dx) * 180) / Math.PI + rot) / 45) % 4) + 4) % 4];
+/**
+ * Box after dragging handle `dir` of a w × h box (centre c, turned rot°) to p: the opposite side or corner stays put.
+ * size(w, h) adjusts the new size (minimum, snapping, aspect). Returns {w, h, x, y, shift}: shift is how far things
+ * inside the box (in its own coordinates) move so they stay where they are on the map.
+ */
+function resizeBox(o, dir, p, size) {
+    const [dx, dy] = RESIZE_DIRS[dir] ?? RESIZE_DIRS.se;
+    const c = [o.x + o.w / 2, o.y + o.h / 2], rot = o.rot ?? 0;
+    const lp = rotPt(p, c, -rot);
+    // anchor: the opposite edge in the box's own frame
+    const ax = c[0] - (dx * o.w) / 2, ay = c[1] - (dy * o.h) / 2;
+    const [w, h] = size(dx ? dx * (lp[0] - ax) : o.w, dy ? dy * (lp[1] - ay) : o.h, dx && dy);
+    const d = [dx ? (dx * (w - o.w)) / 2 : 0, dy ? (dy * (h - o.h)) / 2 : 0]; // centre moves this far in the box's frame
+    const nc = rotPt([c[0] + d[0], c[1] + d[1]], c, rot);
+    return { w, h, x: nc[0] - w / 2, y: nc[1] - h / 2, shift: [(w - o.w) / 2 - d[0], (h - o.h) / 2 - d[1]] };
+}
 const rotPt = ([x, y], [cx, cy], deg) => { const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a); return [cx + (x - cx) * c - (y - cy) * s, cy + (x - cx) * s + (y - cy) * c]; };
 
 // ------------------------------------------------------------------ page: load or create
@@ -330,6 +426,7 @@ const TOOLS = [
     ["select", "Select", "V", "M5 3l14 8-6 2-2 6z"],
     ["pan", "Pan (or hold Space)", "H", "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"],
     ["stamp", "Stamp", "I", "M12 3l5 9H7zM12 12v8"],
+    ["blueprint", "Blueprint: place a saved group of things", "B", "M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z"],
     ["scatter", "Scatter brush", "G", "M9 10l2-4 2 4zM13 16l2-4 2 4zM6 16l2-4 2 4z"],
     ["line", "Line: roads, rivers, walls, cliffs…", "L", "M4 19C9 17 9 7 20 5"],
     ["ribbon", "Track or strip: curved roads, rails, monorail… with its own grid", "C", "M3 19c5-9 11-9 16-15M7 21c4-7 9-8 14-13M5 16l3 3M9 12l3 3M14 8l3 3"],
@@ -341,7 +438,7 @@ const TOOLS = [
     ["pin", "Pin a sub-location", "P", "M12 21s7-7 7-12a7 7 0 0 0-14 0c0 5 7 12 7 12zM12 9h.01"],
     ["measure", "Measure", "M", "M3 17L17 3l4 4L7 21zM7 13l2 2M10 10l2 2M13 7l2 2"],
     ["roomshape", "Add to or cut from a room (box, circle, polygon)", "U", "M4 4h10v6h6v10H4zM14 4l6 6", "grid"],
-    ["opening", "Opening, door or window in a room wall", "N", "M3 20h5V8h8v12h5M8 20a8 8 0 0 1 8-8", "grid"],
+    ["opening", "Opening, door or window in a room wall, or wall to close a gap", "N", "M3 20h5V8h8v12h5M8 20a8 8 0 0 1 8-8", "grid"],
     ["erase", "Erase", "E", "M16 4l5 5-10 10H6l-3-3zM11 9l5 5"],
 ];
 
@@ -361,11 +458,18 @@ function Editor({ data }) {
     const [panel, setPanel] = useState("stamps");
     const [hover, setHover] = useState(null);
     const [draft, setDraft] = useState(null); // {pts, freehand} for line/area/ribbon
+    const [menu, setMenu] = useState(null); // right-click menu: {x, y (px in the canvas), p (map point)}
+    const putDown = useRef(false); // this right-click put a stamp down (no menu for it)
     const draftRef = useRef(null); draftRef.current = draft;
     const [ghost, setGhost] = useState(null); // drag previews: box, rect, measure
     const [autosave, setAutosave] = useState(() => store.get("mapAutosave", true));
     const [space, setSpace] = useState(false);
     const [library, setLibrary] = useState(null);
+    const [blueprints, setBlueprints] = useState(null); // saved blueprints [{file, name, category, src}]
+    const [bpCats, setBpCats] = useState([]); // blueprint categories (folders, empty ones too)
+    const [bpEdit, setBpEdit] = useState(null); // edit dialog: {blueprint: entry} or {category: name | null (new)}
+    const [hand, setHand] = useState(null); // blueprint in hand: {name, category, objects, w, h, textures}
+    const [bpSave, setBpSave] = useState(null); // the Add blueprint dialog: {bp, name, category}
     const svgRef = useRef(), wrapRef = useRef(), dragRef = useRef(null), clip = useRef([]);
     useEffect(() => { focusCanvas = () => wrapRef.current?.focus({ preventScroll: true }); return () => { focusCanvas = null; }; }, []);
     const [size, setSize] = useState({ w: 800, h: 600 });
@@ -378,10 +482,14 @@ function Editor({ data }) {
     // stamp library
     const loadLibrary = () => Promise.all([loadManifest(), api.get("/api/stamps")]).then(([m, v]) => setLibrary({ ...m, vault: v.vault }));
     useEffect(() => { loadLibrary().catch((e) => toast(e.message)); }, []);
+    const takeLibrary = (r) => { setBlueprints(r.blueprints ?? r.list); if (r.categories) setBpCats(r.categories); };
+    const loadBlueprints = () => api.get("/api/map-blueprints").then(takeLibrary).catch((e) => toast(e.message));
+    useEffect(() => { loadBlueprints(); }, []);
     // derived textures: the shared library (Map Textures.md) over the copies saved in this map
     const [texLib, setTexLib] = useState({ textures: {}, mtime: null });
     useEffect(() => { api.get("/api/textures").then(setTexLib).catch(() => {}); }, []);
-    const customTex = useMemo(() => ({ ...(doc.textures ?? {}), ...texLib.textures }), [doc.textures, texLib]);
+    // (and a blueprint in hand brings the ones it was saved with)
+    const customTex = useMemo(() => ({ ...(hand?.textures ?? {}), ...(doc.textures ?? {}), ...texLib.textures }), [doc.textures, texLib, hand]);
     TEX = useMemo(() => textureCatalog(customTex), [customTex]);
     TEX_CUSTOM = customTex;
     /** the map document with copies of the derived textures it uses (so the saved map never depends on the library) */
@@ -555,6 +663,8 @@ function Editor({ data }) {
         let x = lp[0] - w / 2, y = lp[1] - hh / 2;
         if (snapOn(e)) { x = Math.floor(lp[0] / B) * B; y = Math.floor(lp[1] / B) * B; }
         let o = { id: uid(), type: "stamp", src: stampSrc(pick), name: pick.name, x, y, w, h: hh, ...(opt.handRot ? { rot: opt.handRot } : {}), ...(pick.ports ? { ports: pick.ports } : {}) };
+        // placed where the preview showed it, then its box fitted to the picture
+        o = fitted(o, await trimOf(o.src));
         const sn = !e?.altKey && portSnap(o, room);
         if (sn) o = shiftLocal(o, room, sn);
         commit(addTo(docRef.current, room?.id, [o]));
@@ -594,7 +704,7 @@ function Editor({ data }) {
             const o = { id: uid(), type: "stamp", src, name: pick.name, x: q[0] - w / 2, y: q[1] - hh / 2, w, h: hh };
             placed.push(o);
             const { room, lp } = spaceAt(q, d);
-            add.push([room?.id, { ...o, x: lp[0] - w / 2, y: lp[1] - hh / 2 }]);
+            add.push([room?.id, fitted({ ...o, x: lp[0] - w / 2, y: lp[1] - hh / 2 })]);
         }
         return add.reduce((acc, [rid, o]) => addTo(acc, rid, [o]), d);
     };
@@ -789,6 +899,14 @@ function Editor({ data }) {
         if (!rp || rp.pts.length < 3) return;
         addShape(rp.room, { op: opt.roomOp, shape: "poly", pts: rp.pts });
     };
+    /** the stamp the opening tool puts in an opening `len` wide (box size B): {src, w, h, off (its middle's distance
+     * from the opening's middle, along the wall), material} */
+    const fittingFor = (kind, len, B) => {
+        if (WALL_FITTINGS[kind]?.panes) return { src: windowStampSrc(len, B, opt.openPanes ?? autoPanes(len, B)), w: len, h: B, off: 0 };
+        const material = opt.doorMaterial ?? "wood";
+        const d = doorStamp(kind, len, B, material, opt.doorPanels ?? 2);
+        return { src: d.src, w: d.w, h: d.h, off: d.w / 2 - d.ox - len / 2, material };
+    };
     /** nearest room wall to p (within reach): {room, q (room coordinates), angle} */
     const wallHit = (p, e) => {
         let best = null;
@@ -811,7 +929,8 @@ function Editor({ data }) {
             svgRef.current.setPointerCapture?.(e.pointerId);
             return;
         }
-        if (e.button === 2 && (tool === "stamp" || tool === "scatter")) { setTool("select"); return; }
+        // right-click puts the stamp (or blueprint) down; the menu stays shut for that click
+        if (e.button === 2 && (tool === "stamp" || tool === "scatter" || tool === "blueprint")) { putDown.current = true; setTool("select"); return; }
         if (e.button === 2 && tool !== "floor") return;
         const p = toMap(e);
         const d0 = docRef.current;
@@ -821,13 +940,14 @@ function Editor({ data }) {
             const o = selected[0];
             const [kind, i] = handle.split(":");
             if (kind === "rotate" && o.type === "room" && !canRotateRoom()) return toast("Turn snapping off to rotate rooms");
-            dragRef.current = { kind, i: Number(i), o, room: roomOf(o.id), d0 };
+            dragRef.current = { kind, i: Number(i), dir: i, o, room: roomOf(o.id), d0 };
             capture();
             return;
         }
         switch (tool) {
             case "select": {
-                const id = hitId(e);
+                // Ctrl+drag draws a selection box anywhere, even over rooms and areas
+                const id = e.ctrlKey || e.metaKey ? null : hitId(e);
                 if (id) {
                     if (active.locked) return toast(`${active.name} is locked`);
                     const next = e.shiftKey ? (sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]) : sel.includes(id) ? sel : [id];
@@ -841,10 +961,11 @@ function Editor({ data }) {
                 break;
             }
             case "stamp": if (opt.stamp) placeStamp(opt.stamp, p, e); else toast("Pick a stamp in the library first"); break;
+            case "blueprint": placeBlueprint(p, e); break;
             case "scatter": {
                 if (!opt.stamp) return toast("Pick a stamp in the library first");
                 if (locked()) return;
-                stampsFor(opt.stamp).forEach((s) => aspectOf(stampSrc(s)));
+                stampsFor(opt.stamp).forEach((s) => { aspectOf(stampSrc(s)); trimOf(stampSrc(s)); });
                 const placed = [];
                 live(scatterAt(p, d0, placed));
                 dragRef.current = { kind: "scatter", d0, last: p, placed };
@@ -908,12 +1029,29 @@ function Editor({ data }) {
                 const B = room.box ?? CELL, len = opt.openLen * B;
                 const wall = PATH_STYLES[room.wall];
                 const thick = (wall ? Math.max(...wall.layers.map((l) => l.w)) : 12) + 8;
-                const open = { op: "open", cx: q[0], cy: q[1], len, thick, rot: angle };
                 const kind = opt.openKind;
-                // doors are drawn with their swing inside the stamp; the wall line runs through its middle
-                const file = { door: "door-swing", "double-door": "double-door-swing", window: "window" }[kind];
-                const sh = kind === "door" ? len * 2 : len;
-                const kids = kind === "opening" ? [] : [{ id: uid(), type: "stamp", src: `/stamps/steampunk/${file}.svg`, name: kind, w: len, h: sh, x: q[0] - len / 2, y: q[1] - sh / 2, rot: ((angle % 360) + 360) % 360 }];
+                if (kind === "wall") {
+                    // a wall piece closes the gaps it covers and takes out the doors and windows that sat in them
+                    const piece = { op: "wall", cx: q[0], cy: q[1], len, thick, rot: angle };
+                    const a = (angle * Math.PI) / 180, u = [Math.cos(a), Math.sin(a)];
+                    // a door stamp lies in the wall here when its middle is on the wall line and its length along the wall
+                    // (pocket and barn doors run on beside their opening) overlaps the piece
+                    const inGap = (c) => {
+                        if (c.type !== "stamp" || !(DOOR_STAMP.test(c.src ?? "") || WALL_FITTINGS[c.name])) return false;
+                        const dx = c.x + c.w / 2 - q[0], dy = c.y + c.h / 2 - q[1], along = dx * u[0] + dy * u[1];
+                        return Math.abs(dy * u[0] - dx * u[1]) <= thick / 2 && Math.abs(along) < (len + c.w) / 2 - 1;
+                    };
+                    commit(mapDeep(docRef.current, (o) => (o.id === room.id ? { ...o, shapes: [...(o.shapes ?? []), piece], children: (o.children ?? []).filter((c) => !inGap(c)) } : o)));
+                    break;
+                }
+                const open = { op: "open", cx: q[0], cy: q[1], len, thick, rot: angle };
+                const fit = WALL_FITTINGS[kind];
+                const kids = [];
+                if (fit) {
+                    const f = fittingFor(kind, len, B), a = (angle * Math.PI) / 180;
+                    const c = [q[0] + Math.cos(a) * f.off, q[1] + Math.sin(a) * f.off];
+                    kids.push({ id: uid(), type: "stamp", src: f.src, name: kind, ...(f.material ? { material: f.material } : {}), w: f.w, h: f.h, x: c[0] - f.w / 2, y: c[1] - f.h / 2, rot: ((angle % 360) + 360) % 360 });
+                }
                 commit(mapDeep(docRef.current, (o) => (o.id === room.id ? { ...o, shapes: [...(o.shapes ?? []), open], children: [...(o.children ?? []), ...kids] } : o)));
                 break;
             }
@@ -964,16 +1102,17 @@ function Editor({ data }) {
             }
             case "box": setGhost({ box: [dr.p0, p] }); break;
             case "resize": {
-                const o = dr.o, cx = o.x + (o.w ?? 0) / 2, cy = o.y + (o.h ?? 0) / 2;
+                // the dragged side or corner follows the pointer, the opposite one stays put
+                const o = dr.o;
                 p = dr.room ? toRoom(dr.room, p) : p;
                 const upd = (fn) => live(mapDeep(dr.d0, (x) => (x.id === o.id ? fn(x) : x)));
                 if (o.type === "room") {
-                    const lp = rotPt(p, [cx, cy], -(o.rot ?? 0)), B = o.box ?? CELL;
-                    let w = Math.max(B, Math.abs(lp[0] - cx) * 2), hh = Math.max(B, Math.abs(lp[1] - cy) * 2);
-                    if (snapOn(e)) { w = Math.max(B, Math.round(w / B) * B); hh = Math.max(B, Math.round(hh / B) * B); }
+                    const B = o.box ?? CELL;
+                    const snap = (v) => (snapOn(e) ? Math.max(B, Math.round(v / B) * B) : Math.max(B, v));
+                    const r = resizeBox(o, dr.dir, p, (w, h) => [snap(w), snap(h)]);
                     // keep the contents where they are on the map
-                    const sx = (w - o.w) / 2, sy = (hh - o.h) / 2;
-                    upd((x) => ({ ...x, w, h: hh, x: cx - w / 2, y: cy - hh / 2, children: (x.children ?? []).map((c) => moveObject(c, sx, sy)), shapes: (x.shapes ?? []).map((sh) => moveShape(sh, sx, sy)), cells: shiftCells(x.cells, sx, sy, B) }));
+                    const [sx, sy] = r.shift;
+                    upd((x) => ({ ...x, w: r.w, h: r.h, x: r.x, y: r.y, children: (x.children ?? []).map((c) => moveObject(c, sx, sy)), shapes: (x.shapes ?? []).map((sh) => moveShape(sh, sx, sy)), cells: shiftCells(x.cells, sx, sy, B) }));
                     break;
                 }
                 if (o.type === "text") {
@@ -982,11 +1121,14 @@ function Editor({ data }) {
                     upd((x) => ({ ...x, size: Math.round((o.size ?? TEXT_STYLES[o.style]?.size ?? 20) * k) }));
                     break;
                 }
-                const lp = rotPt(p, [cx, cy], -(o.rot ?? 0));
-                let w = Math.max(8, Math.abs(lp[0] - cx) * 2), hh = Math.max(8, Math.abs(lp[1] - cy) * 2);
-                if (!e.shiftKey) { const k = Math.max(w / o.w, hh / o.h); w = o.w * k; hh = o.h * k; }
-                if (snapOn(e) && !o.rot) { w = Math.max(CELL, Math.round(w / CELL) * CELL); hh = Math.max(CELL / 2, Math.round(hh / (CELL / 2)) * (CELL / 2)); }
-                upd((x) => ({ ...x, w, h: hh, x: cx - w / 2, y: cy - hh / 2 }));
+                // corners keep the stamp's proportions (Shift: free), sides stretch it
+                const r = resizeBox(o, dr.dir, p, (w, hh, corner) => {
+                    w = Math.max(8, w); hh = Math.max(8, hh);
+                    if (corner && !e.shiftKey) { const k = Math.max(w / o.w, hh / o.h); w = o.w * k; hh = o.h * k; }
+                    if (snapOn(e) && !o.rot) { w = Math.max(CELL, Math.round(w / CELL) * CELL); hh = Math.max(CELL / 2, Math.round(hh / (CELL / 2)) * (CELL / 2)); }
+                    return [w, hh];
+                });
+                upd((x) => ({ ...x, w: r.w, h: r.h, x: r.x, y: r.y }));
                 break;
             }
             case "rotate": {
@@ -1044,7 +1186,9 @@ function Editor({ data }) {
             case "box": {
                 const [a, b] = [dr.p0, p];
                 const r = { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(a[0] - b[0]), h: Math.abs(a[1] - b[1]) };
-                if (r.w > 2 || r.h > 2) setSel([...new Set([...dr.keep, ...active.objects.filter((o) => touchesBox(o, r)).map((o) => o.id)])]);
+                // dragged left to right: what lies wholly inside the box; right to left: anything it touches
+                const inside = b[0] >= a[0];
+                if (r.w > 2 || r.h > 2) setSel([...new Set([...dr.keep, ...active.objects.filter((o) => (inside ? insideBox(o, r) : touchesBox(o, r))).map((o) => o.id)])]);
                 setGhost(null);
                 break;
             }
@@ -1152,7 +1296,8 @@ function Editor({ data }) {
             if (mod && k === "y") { e.preventDefault(); redo(); return; }
             if (mod && k === "d") { e.preventDefault(); duplicate(); return; }
             if (mod && k === "g") { e.preventDefault(); e.shiftKey ? separateSelected() : joinSelected(); return; }
-            if (mod && k === "c" && selected.length) { clip.current = selEntries.map((x) => (x.room ? rehome(x.o, x.room, null) : x.o)); toast(`Copied ${selected.length}`); return; }
+            if (mod && k === "c" && selected.length) { copySel(); return; }
+            if (mod && k === "x" && selected.length) { cutSel(); return; }
             if (mod && k === "a") { e.preventDefault(); setSel(active.objects.map((o) => o.id)); return; }
             if (mod) return;
             if (e.key === " ") { e.preventDefault(); setSpace(true); return; }
@@ -1172,9 +1317,19 @@ function Editor({ data }) {
                 return;
             }
             if (e.key === "[" || e.key === "]") { order(e.key === "]" ? "up" : "down"); return; }
+            // a blueprint in hand: Q / E turn it (a quarter turn on a snapped grid, else 10°, Shift 90°), Shift+H / Shift+V flip it
+            if (tool === "blueprint" && hand && (k === "q" || k === "e")) { turnHand((k === "e" ? 1 : -1) * (e.shiftKey || (grid && doc.snap) ? 90 : 10)); return; }
+            if (tool === "blueprint" && hand && e.shiftKey && (k === "h" || k === "v")) { flipHand(k); return; }
+            // Shift+H / Shift+V mirror the selection left-right / top-bottom (plain H and V pick tools)
+            if (e.shiftKey && (k === "h" || k === "v") && sel.length) { flipSel(k); return; }
             // holding a stamp: Q / E turn it in the hand (10°, Shift 90°) instead of switching tools
             if (tool === "stamp" && (k === "q" || k === "e")) { setO({ handRot: ((((opt.handRot ?? 0) + (k === "e" ? 1 : -1) * (e.shiftKey ? 90 : 10)) % 360) + 360) % 360 }); return; }
             // and Z / X make it smaller or larger (10% a press, Shift: 50%)
+            // with the opening tool Z / X make the opening narrower / wider (half a box a press, Shift: a whole box)
+            if (tool === "opening" && (k === "z" || k === "x")) { const step = e.shiftKey ? 1 : 0.5; setO({ openLen: Math.max(0.5, Math.min(16, (opt.openLen ?? 1) + (k === "x" ? step : -step))) }); return; }
+            // and for windows Q / E take a pane away / add one (from the automatic count for the width)
+            if (tool === "opening" && WALL_FITTINGS[opt.openKind]?.panels && (k === "q" || k === "e")) { setO({ doorPanels: Math.max(2, Math.min(4, (opt.doorPanels ?? 2) + (k === "e" ? 1 : -1))) }); return; }
+            if (tool === "opening" && opt.openKind === "window" && (k === "q" || k === "e")) { const n = opt.openPanes ?? autoPanes(opt.openLen * CELL, CELL); setO({ openPanes: Math.max(1, Math.min(MAX_PANES, n + (k === "e" ? 1 : -1))) }); return; }
             if (tool === "stamp" && (k === "z" || k === "x")) { const f = e.shiftKey ? 1.5 : 1.1; setO({ handScale: Math.round(Math.max(0.1, Math.min(10, (opt.handScale ?? 1) * (k === "x" ? f : 1 / f))) * 1000) / 1000 }); return; }
             if (e.key === "+" || e.key === "=") { zoomAt(1.25); return; }
             if (e.key === "-") { zoomAt(0.8); return; }
@@ -1187,14 +1342,7 @@ function Editor({ data }) {
             if (typing(e)) return;
             const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith("image/"));
             if (file) { e.preventDefault(); uploadStamp(file); return; }
-            if (clip.current.length) {
-                e.preventDefault();
-                const off = grid ? CELL : 20;
-                const copies = clip.current.map((o) => ({ ...moveObject(o, off, off), id: uid() }));
-                commit(addObjects(copies));
-                clip.current = copies;
-                setSel(copies.map((o) => o.id));
-            }
+            if (clip.current.length) { e.preventDefault(); pasteAt(hover); }
         };
         addEventListener("keydown", down); addEventListener("keyup", up); addEventListener("paste", paste);
         return () => { removeEventListener("keydown", down); removeEventListener("keyup", up); removeEventListener("paste", paste); };
@@ -1234,15 +1382,152 @@ function Editor({ data }) {
 
     // ---------------------------------------------------------------- selection actions
     const removeSel = () => { if (locked()) return; commit(mapDeep(docRef.current, (o) => (sel.includes(o.id) ? null : o))); setSel([]); };
-    const withIds = (o) => (o.type === "room" ? { ...o, id: uid(), group: undefined, children: (o.children ?? []).map(withIds) } : { ...o, id: uid() });
+    /** Copies with new ids (rooms' contents too). Rooms stay joined only to rooms copied with them: a join that also
+     * held rooms left behind is dropped, so a copy never joins the originals. */
+    const freshCopies = (objs) => {
+        const count = new Map();
+        for (const o of allObjects(objs)) if (o.type === "room" && o.group) count.set(o.group, (count.get(o.group) ?? 0) + 1);
+        const groups = new Map([...count].filter(([, n]) => n > 1).map(([g]) => [g, `g${uid()}`]));
+        const copy = (o) => (o.type === "room"
+            ? { ...o, id: uid(), group: groups.get(o.group), children: (o.children ?? []).map(copy) }
+            : { ...o, id: uid() });
+        return objs.map(copy);
+    };
+    const copySel = () => {
+        // things inside a copied room come along with it, not a second time on their own
+        const carried = carriedBy(docRef.current, sel);
+        clip.current = selEntries.filter((x) => !carried.has(x.o.id)).map((x) => (x.room ? rehome(x.o, x.room, null) : x.o));
+        toast(`Copied ${clip.current.length}`);
+    };
+    const cutSel = () => { if (locked()) return; copySel(); removeSel(); };
+    /** Paste the copied things centred on `at` (on a snapped grid map by whole squares), else one square down and right */
+    const pasteAt = (at) => {
+        if (!clip.current.length || locked()) return;
+        let dx = grid ? CELL : 20, dy = dx;
+        if (at) {
+            const bs = clip.current.map(bounds);
+            const x0 = Math.min(...bs.map((b) => b.x)), y0 = Math.min(...bs.map((b) => b.y));
+            const x1 = Math.max(...bs.map((b) => b.x + b.w)), y1 = Math.max(...bs.map((b) => b.y + b.h));
+            dx = at[0] - (x0 + x1) / 2; dy = at[1] - (y0 + y1) / 2;
+            if (grid && doc.snap) { dx = Math.round(dx / CELL) * CELL; dy = Math.round(dy / CELL) * CELL; }
+        }
+        const copies = freshCopies(clip.current).map((o) => moveObject(o, dx, dy));
+        commit(addObjects(copies));
+        setSel(copies.map((o) => o.id));
+    };
+    /** Mirror the selection (and rooms joined to it) left-right ("h") or top-bottom ("v") about its middle. Things
+     * that all sit in one room mirror along that room's own axes. */
+    const flipSel = (axis) => {
+        if (!sel.length || locked()) return;
+        const d = docRef.current;
+        const ids = withGroups(sel), carried = carriedBy(d, ids);
+        const picked = entriesOf(layerOf(d).objects).filter((x) => ids.includes(x.o.id) && !carried.has(x.o.id));
+        if (!picked.length) return;
+        const holder = picked.every((x) => (x.room?.id ?? null) === (picked[0].room?.id ?? null)) ? picked[0].room : null;
+        const local = picked.map((x) => ((x.room?.id ?? null) === (holder?.id ?? null) ? x.o : rehome(x.o, x.room, holder)));
+        const bs = local.map(bounds);
+        const lo = Math.min(...bs.map((b) => (axis === "h" ? b.x : b.y))), hi = Math.max(...bs.map((b) => (axis === "h" ? b.x + b.w : b.y + b.h)));
+        let c = (lo + hi) / 2;
+        // on a snapped grid the mirror line sits on a square's edge or middle, so squared things stay on the grid
+        if (grid && doc.snap) { const half = (holder?.box ?? CELL) / 2; c = Math.round(c / half) * half; }
+        const flipped = new Map(picked.map((x, i) => {
+            const f = flipObject(local[i], axis, c);
+            return [x.o.id, (x.room?.id ?? null) === (holder?.id ?? null) ? f : rehome(f, holder, x.room)];
+        }));
+        commit(regroup(mapDeep(d, (o) => flipped.get(o.id) ?? o), ids));
+    };
+    // ---------------------------------------------------------------- blueprints (saved groups, placed like a stamp)
+    /** objects moved so their box starts at 0,0 (on a grid map at a square's corner, so they stay on the grid) */
+    const normalized = (objs) => {
+        const bs = objs.map(bounds);
+        const x0 = Math.min(...bs.map((b) => b.x)), y0 = Math.min(...bs.map((b) => b.y));
+        const x1 = Math.max(...bs.map((b) => b.x + b.w)), y1 = Math.max(...bs.map((b) => b.y + b.h));
+        const ox = grid ? Math.floor(x0 / CELL) * CELL : x0, oy = grid ? Math.floor(y0 / CELL) * CELL : y0;
+        return { objects: objs.map((o) => moveObject(o, -ox, -oy)), w: x1 - ox, h: y1 - oy };
+    };
+    /** the selection as a blueprint, with copies of the derived textures it uses */
+    const blueprintOfSel = () => {
+        const carried = carriedBy(docRef.current, sel);
+        const n = normalized(selEntries.filter((x) => !carried.has(x.o.id)).map((x) => (x.room ? rehome(x.o, x.room, null) : x.o)));
+        const need = new Set();
+        const add = (id) => { if (customTex[id] && !need.has(id)) { need.add(id); add(customTex[id].from); } };
+        objectFloors(n.objects, customTex).forEach(add);
+        return { ...n, grid, textures: Object.fromEntries([...need].map((id) => [id, customTex[id]])) };
+    };
+    const saveBlueprint = async ({ bp, name, category }) => {
+        try {
+            const r = await api.send("POST", "/api/map-blueprint", { name, category, blueprint: bp });
+            takeLibrary(r);
+            setBpSave(null);
+            toast(`${r.replaced ? "Replaced" : "Saved"} blueprint ${name}`);
+        } catch (e) { toast(e.message); }
+    };
+    // editing the library: rename or move a blueprint, delete it, add, rename or remove a category
+    const renameBlueprint = async (entry, name, category) => {
+        try {
+            const r = await api.send("POST", "/api/map-blueprint/rename", { file: entry.file, name, category });
+            takeLibrary(r);
+            if (hand?.file === entry.file) setHand({ ...hand, file: r.file, name, category });
+            setBpEdit(null);
+            toast(r.replaced ? `${name} replaced the blueprint of that name in ${category}` : `Saved ${name} in ${category}`);
+        } catch (e) { toast(e.message); }
+    };
+    const deleteBlueprint = async (entry) => {
+        try { takeLibrary(await api.send("DELETE", `/api/map-blueprint?file=${encodeURIComponent(entry.file)}`)); setBpEdit(null); toast(`Moved ${entry.name} to the vault's trash`); }
+        catch (e) { toast(e.message); }
+    };
+    const saveCategory = async (from, to) => {
+        try {
+            takeLibrary(await api.send("POST", "/api/map-blueprint/category", { from, to }));
+            if (from && hand?.category === from) setHand({ ...hand, category: to, file: hand.file?.replace(`/${from}/`, `/${to}/`) });
+            setBpEdit(null);
+            toast(from ? `Renamed ${from} to ${to}` : `Added the category ${to}`);
+        } catch (e) { toast(e.message); }
+    };
+    const deleteCategory = async (name) => {
+        try { takeLibrary(await api.send("DELETE", `/api/map-blueprint/category?name=${encodeURIComponent(name)}`)); setBpEdit(null); toast(`Removed ${name}`); }
+        catch (e) { toast(e.message); }
+    };
+    const pickBlueprint = async (entry) => {
+        try {
+            const { blueprint: bp } = await api.get(`/api/map-blueprint?file=${encodeURIComponent(entry.file)}`);
+            setHand({ file: entry.file, name: entry.name, category: entry.category, textures: bp.textures ?? {}, ...normalized(bp.objects) });
+            setTool("blueprint");
+        } catch (e) { toast(e.message); }
+    };
+    // turning and flipping in the hand: on a snapped grid about a square's corner (turns) or edge/middle (flips), so
+    // squared things stay on the grid
+    const handPivot = (step) => [hand.w / 2, hand.h / 2].map((v) => (grid && doc.snap ? Math.round(v / step) * step : v));
+    const turnHand = (deg) => { if (!hand) return; const c = handPivot(CELL); setHand({ ...hand, ...normalized(hand.objects.map((o) => turnObject(o, deg, c))) }); };
+    const flipHand = (axis) => { if (!hand) return; const c = handPivot(CELL / 2)[axis === "h" ? 0 : 1]; setHand({ ...hand, ...normalized(hand.objects.map((o) => flipObject(o, axis, c))) }); };
+    /** where the blueprint's box goes with the pointer at p: centred on it, on a grid map by whole squares */
+    const handOffset = (p, e) => {
+        let dx = p[0] - hand.w / 2, dy = p[1] - hand.h / 2;
+        if (snapOn(e)) { dx = Math.round(dx / CELL) * CELL; dy = Math.round(dy / CELL) * CELL; }
+        return [dx, dy];
+    };
+    const placeBlueprint = (p, e) => {
+        if (!hand) return toast("Pick a blueprint in the Blueprints tab first");
+        if (locked()) return;
+        const [dx, dy] = handOffset(p, e);
+        const copies = freshCopies(hand.objects).map((o) => moveObject(o, dx, dy));
+        // derived textures the map doesn't know yet come along with the blueprint
+        let d = docRef.current;
+        const missing = Object.entries(hand.textures ?? {}).filter(([id]) => !(doc.textures ?? {})[id] && !texLib.textures[id]);
+        if (missing.length) d = { ...d, textures: { ...(d.textures ?? {}), ...Object.fromEntries(missing) } };
+        commit(addObjects(copies, d));
+        setSel(copies.map((o) => o.id));
+    };
+    const handMarkup = useMemo(() => (hand ? layerSvg({ objects: hand.objects, floor: {} }, { stampHref: (o) => viewSrc(o.src), pinLabel: (o) => linkName(o.location) }) : ""), [hand]);
     const duplicate = () => {
         if (!selected.length || locked()) return;
         let d = docRef.current;
         const ids = [], carried = carriedBy(d, sel);
-        for (const { o, room } of selEntries) {
-            if (carried.has(o.id)) continue;
+        const picked = selEntries.filter(({ o }) => !carried.has(o.id));
+        const copies = freshCopies(picked.map(({ o }) => o));
+        for (const [i, { room }] of picked.entries()) {
             const off = room ? room.box ?? CELL : grid ? CELL : 20;
-            const c = withIds(moveObject(o, off, off));
+            const c = moveObject(copies[i], off, off);
             d = addTo(d, room?.id, [c]);
             ids.push(c.id);
         }
@@ -1275,6 +1560,72 @@ function Editor({ data }) {
         toast(`Moved to ${d.layers.find((l) => l.id === id)?.name}`);
     };
 
+    // ---------------------------------------------------------------- right-click menu
+    const openMenu = (e) => {
+        e.preventDefault();
+        if (putDown.current) { putDown.current = false; return; }
+        // the floor tools erase with the right button, the stamp tools drop the stamp; drawing ignores it
+        if (["floor", "unfloor", "stamp", "scatter", "blueprint"].includes(tool) || draft || roomPoly) return;
+        const id = hitId(e);
+        // right-clicking something outside the selection selects just that (something inside a selected room counts as
+        // in it); empty map clears the selection
+        const held = id && entries.some((x) => sel.includes(x.o.id) && x.o.type === "room" && idsIn(x.o).includes(id));
+        if (!id) setSel([]);
+        else if (!sel.includes(id) && !held) setSel([id]);
+        const r = wrapRef.current.getBoundingClientRect();
+        setMenu({ x: e.clientX - r.left, y: e.clientY - r.top, p: toMap(e) });
+    };
+    /** stamps whose box can be fitted to their picture (not the opening tool's doors and windows, which are found by
+     * their middle on the wall line) */
+    const canFit = (o) => o.type === "stamp" && !WALL_FITTINGS[o.name];
+    const fitSel = async () => {
+        const ids = selected.filter(canFit).map((o) => o.id);
+        const srcs = [...new Set(selected.filter(canFit).map((o) => o.src))];
+        await Promise.all(srcs.map(trimOf));
+        let n = 0;
+        commit(mapDeep(docRef.current, (o) => {
+            if (!ids.includes(o.id)) return o;
+            const t = trimDone.get(o.src);
+            if (!t || (o.crop && o.crop.every((v, i) => Math.abs(v - t[i]) < 1e-4))) return o;
+            n++;
+            return fitStampBox(o, t);
+        }));
+        toast(n ? `Fitted ${n} stamp${n === 1 ? "" : "s"} to ${n === 1 ? "its picture" : "their pictures"}` : "Already fitted");
+    };
+    const closeMenu = () => { setMenu(null); focusCanvas?.(); };
+    const menuItems = () => {
+        const at = menu.p;
+        if (!selected.length) return [
+            { label: "Paste here", keys: "Ctrl+V", run: () => pasteAt(at), off: !clip.current.length },
+            { label: "Select all", keys: "Ctrl+A", run: () => setSel(active.objects.map((o) => o.id)), off: !active.objects.length },
+        ];
+        const rooms = selected.filter((x) => x.type === "room");
+        const turnable = selected.some((x) => x.type === "stamp" || x.type === "text");
+        const turn = (a) => patchSel((x) => (x.type === "stamp" || x.type === "text" ? { rot: (((x.rot ?? 0) + a) % 360 + 360) % 360 || undefined } : {}));
+        return [
+            { label: "Cut", keys: "Ctrl+X", run: cutSel },
+            { label: "Copy", keys: "Ctrl+C", run: copySel },
+            { label: "Paste here", keys: "Ctrl+V", run: () => pasteAt(at), off: !clip.current.length },
+            { label: "Duplicate", keys: "Ctrl+D", run: duplicate },
+            selected.some(canFit) && { label: "Fit box to picture", run: fitSel },
+            { label: "Add blueprint…", run: () => { const one = selected.length === 1 ? selected[0] : null; setBpSave({ bp: blueprintOfSel(), name: one?.name ?? (one?.type === "room" ? "Room" : ""), category: hand?.category ?? "General" }); } },
+            "-",
+            { label: "Flip left to right", keys: "Shift+H", run: () => flipSel("h") },
+            { label: "Flip top to bottom", keys: "Shift+V", run: () => flipSel("v") },
+            turnable && { label: "Rotate left 90°", run: () => turn(-90) },
+            turnable && { label: "Rotate right 90°", run: () => turn(90) },
+            "-",
+            rooms.length > 1 && { label: "Join rooms", keys: "Ctrl+G", run: joinSelected },
+            rooms.some((x) => x.group) && { label: "Separate rooms", keys: "Ctrl+Shift+G", run: separateSelected },
+            rooms.length === 1 && rooms[0].children?.length > 0 && { label: "Release the things inside", run: () => releaseRoom(rooms[0]) },
+            "-",
+            { label: "Bring to front", run: () => order("top") },
+            { label: "Send to back", run: () => order("bottom") },
+            "-",
+            { label: "Delete", keys: "Del", run: removeSel, danger: true },
+        ].filter(Boolean);
+    };
+
     // ---------------------------------------------------------------- rendering
     const names = useMemo(() => new Map(data.children.map((c) => [c.name.toLowerCase(), c.title])), [data.children]);
     const [rasterTick, setRasterTickNow] = useState(0);
@@ -1292,7 +1643,7 @@ function Editor({ data }) {
     const placedRooms = useRef(new Map());
     placedRooms.current = useMemo(() => new Map(doc.layers.flatMap((l) => entriesOf(l.objects).filter((e) => e.o.type === "room").map((e) => [e.o.id, worldRoom(e.o, e.room)]))), [doc.layers]);
     const ctx = useMemo(() => ({
-        edit: true, stampHref: (o) => o.src, pinLabel: (o) => names.get(linkName(o.location).toLowerCase()) ?? linkName(o.location),
+        edit: true, stampHref: (o) => viewSrc(o.src), pinLabel: (o) => names.get(linkName(o.location).toLowerCase()) ?? linkName(o.location),
         // selected ribbons stay vector (they are being edited); the rest use bitmaps of their pieces once drawn
         ribbonImage: (o) => {
             if (!canPaint() || sel.includes(o.id)) return null;
@@ -1330,7 +1681,7 @@ function Editor({ data }) {
         return s;
     };
     // only the textures this map shows or the tools are about to paint
-    const needTex = [...new Set([...usedFloors(doc, customTex), opt.floor, opt.areaFill, RIBBONS[opt.ribbonStyle]?.floor, TERRAINS[doc.terrain]?.floor, doc.backdrop].filter(Boolean))].sort();
+    const needTex = [...new Set([...usedFloors(doc, customTex), ...(hand ? objectFloors(hand.objects, customTex) : []), opt.floor, opt.areaFill, RIBBONS[opt.ribbonStyle]?.floor, TERRAINS[doc.terrain]?.floor, doc.backdrop].filter(Boolean))].sort();
     const texKey = `${needTex.join(",")}|${JSON.stringify(needTex.map((id) => customTex[id] ?? null))}`;
     useEffect(() => {
         if (!canRaster()) return;
@@ -1418,7 +1769,7 @@ function Editor({ data }) {
                 const canRot = o.type !== "room" || canRotateRoom();
                 push(html`<g transform=${rot}>
                     <rect x=${b.x} y=${b.y} width=${b.w} height=${b.h} class="sel-box" stroke-width=${1.5 / v.z} />
-                    ${selected.length === 1 && html`<rect data-handle="resize" x=${b.x + b.w - hs} y=${b.y + b.h - hs} width=${hs * 2} height=${hs * 2} class="handle" stroke-width=${1.5 / v.z} />
+                    ${selected.length === 1 && html`${Object.entries(RESIZE_DIRS).filter(([, [dx, dy]]) => o.type !== "text" || (dx && dy)).map(([dir, [dx, dy]]) => html`<rect data-handle=${`resize:${dir}`} x=${b.x + ((dx + 1) * b.w) / 2 - hs} y=${b.y + ((dy + 1) * b.h) / 2 - hs} width=${hs * 2} height=${hs * 2} class="handle" stroke-width=${1.5 / v.z} style=${{ cursor: resizeCursor([dx, dy], o.rot) }} />`)}
                         ${canRot && html`<line x1=${cx} y1=${b.y} x2=${cx} y2=${b.y - 24 / v.z} class="sel-line" stroke-width=${1.5 / v.z} />
                         <circle data-handle="rotate" cx=${cx} cy=${b.y - 24 / v.z} r=${hs} class="handle" stroke-width=${1.5 / v.z} />`}`}
                 </g>`);
@@ -1430,7 +1781,7 @@ function Editor({ data }) {
         }
         const groups = new Set(selected.filter((o) => o.type === "room" && o.group).map((o) => o.group));
         for (const r of worldRooms(doc).values()) if (groups.has(r.group) && !sel.includes(r.id)) out.push(html`<g transform=${roomFrame(r)}><rect width=${r.w} height=${r.h} class="group-box" stroke-width=${1.5 / v.z} /></g>`);
-        if (ghost?.box) { const [a, b] = ghost.box; out.push(html`<rect x=${Math.min(a[0], b[0])} y=${Math.min(a[1], b[1])} width=${Math.abs(a[0] - b[0])} height=${Math.abs(a[1] - b[1])} class="box-sel" stroke-width=${1 / v.z} />`); }
+        if (ghost?.box) { const [a, b] = ghost.box; out.push(html`<rect x=${Math.min(a[0], b[0])} y=${Math.min(a[1], b[1])} width=${Math.abs(a[0] - b[0])} height=${Math.abs(a[1] - b[1])} class=${`box-sel${b[0] < a[0] ? " touch" : ""}`} stroke-width=${1 / v.z} />`); }
         if (ghost?.rect && ghost.free && ghost.room) {
             const room = ghost.room, la = toRoom(room, ghost.rect[0]), lb = toRoom(room, ghost.rect[1]);
             out.push(html`<g transform=${roomFrame(room)}><rect x=${Math.min(la[0], lb[0])} y=${Math.min(la[1], lb[1])} width=${Math.abs(la[0] - lb[0])} height=${Math.abs(la[1] - lb[1])} class="box-sel" stroke-width=${2 / v.z} /></g>`);
@@ -1479,7 +1830,7 @@ function Editor({ data }) {
             const { room, lp, B } = spaceAt(hover);
             let x = snapOn() ? Math.floor(lp[0] / B) * B : lp[0] - w / 2, y = snapOn() ? Math.floor(lp[1] / B) * B : lp[1] - hh / 2;
             if (s.ports) { const sn = portSnap({ x, y, w, h: hh, rot: opt.handRot, ports: s.ports }, room); if (sn) { const t = shiftLocal({ x, y }, room, sn); x = t.x; y = t.y; } }
-            const img = html`<image href=${stampSrc(s)} x=${x} y=${y} width=${w} height=${hh} opacity="0.55" preserveAspectRatio="none" pointer-events="none"
+            const img = html`<image href=${viewSrc(stampSrc(s))} x=${x} y=${y} width=${w} height=${hh} opacity="0.55" preserveAspectRatio="none" pointer-events="none"
                 transform=${opt.handRot ? `rotate(${opt.handRot} ${x + w / 2} ${y + hh / 2})` : undefined} />`;
             out.push(room ? html`<g transform=${roomFrame(room)}>${img}</g>` : img);
         }
@@ -1500,11 +1851,18 @@ function Editor({ data }) {
             const room = targetRoom(hover);
             if (room) { const e = roomExtent(room); out.push(html`<g transform=${roomFrame(room)}><rect x=${e.x} y=${e.y} width=${e.w} height=${e.h} class="sel-box" stroke-width=${1.5 / v.z} /></g>`); }
         }
+        if (hover && tool === "blueprint" && hand && !dragRef.current) {
+            const [dx, dy] = handOffset(hover);
+            out.push(html`<g transform=${`translate(${dx} ${dy})`} opacity="0.7" pointer-events="none" dangerouslySetInnerHTML=${{ __html: handMarkup }} />`);
+            out.push(html`<rect x=${dx} y=${dy} width=${hand.w} height=${hand.h} class="sel-box" stroke-width=${1.5 / v.z} />`);
+        }
         if (hover && tool === "opening") {
             const hit = wallHit(hover);
             if (hit) {
                 const len = opt.openLen * (hit.room.box ?? CELL);
-                out.push(html`<g transform=${roomFrame(hit.room)}><rect x=${hit.q[0] - len / 2} y=${hit.q[1] - 9} width=${len} height=${18} class="opening-preview" stroke-width=${2 / v.z} transform=${`rotate(${hit.angle} ${hit.q[0]} ${hit.q[1]})`} /></g>`);
+                const B = hit.room.box ?? CELL, tf = `rotate(${hit.angle} ${hit.q[0]} ${hit.q[1]})`;
+                out.push(html`<g transform=${roomFrame(hit.room)}><rect x=${hit.q[0] - len / 2} y=${hit.q[1] - 9} width=${len} height=${18} class=${`opening-preview${opt.openKind === "wall" ? " wall" : ""}`} stroke-width=${2 / v.z} transform=${tf} />
+                    ${WALL_FITTINGS[opt.openKind] && (() => { const f = fittingFor(opt.openKind, len, B); return html`<image href=${f.src} x=${hit.q[0] + f.off - f.w / 2} y=${hit.q[1] - f.h / 2} width=${f.w} height=${f.h} preserveAspectRatio="none" transform=${tf} opacity="0.85" />`; })()}</g>`);
             }
         }
         return out;
@@ -1534,7 +1892,7 @@ function Editor({ data }) {
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${d} /></svg></button>`)}
             </nav>
             <section class="map-canvas" ref=${wrapRef} tabindex="-1">
-                <${ToolOptions} tool=${tool} opt=${opt} setO=${setO} grid=${grid} draft=${draft} finishDraft=${finishDraft} data=${data} />
+                <${ToolOptions} tool=${tool} opt=${opt} setO=${setO} grid=${grid} draft=${draft} finishDraft=${finishDraft} data=${data} hand=${hand} />
                 <svg ref=${svgRef} class="map-svg" viewBox=${vb} style=${`cursor:${cursor}`} xmlns="http://www.w3.org/2000/svg"
                     onPointerDown=${onPointerDown} onPointerMove=${onPointerMove} onPointerUp=${onPointerUp} onPointerLeave=${() => setHover(null)}
                     onDblClick=${(e) => {
@@ -1546,7 +1904,7 @@ function Editor({ data }) {
                         const o = active.objects.find((x) => x.id === hitId(e));
                         if (o?.type === "pin") return openPin(o);
                         if (o?.pts) addPoint(o, toMap(e));
-                    }} onContextMenu=${(e) => e.preventDefault()}
+                    }} onContextMenu=${openMenu}
                     onDragOver=${(e) => e.preventDefault()} onDrop=${onDrop}>
                     <defs dangerouslySetInnerHTML=${{ __html: patterns }} />
                     <rect x=${-1e5} y=${-1e5} width=${2e5} height=${2e5} class="map-outside" />
@@ -1567,14 +1925,19 @@ function Editor({ data }) {
                     </g>
                     <g class="overlay">${overlay()}</g>
                 </svg>
+                ${menu && html`<${MapMenu} menu=${menu} items=${menuItems()} close=${closeMenu} />`}
+                ${bpSave && html`<${BlueprintSave} init=${bpSave} list=${blueprints ?? []} categories=${bpCats} onSave=${saveBlueprint} onClose=${() => { setBpSave(null); focusCanvas?.(); }} />`}
+                ${bpEdit?.blueprint && html`<${BlueprintEdit} entry=${bpEdit.blueprint} list=${blueprints ?? []} categories=${bpCats} onSave=${renameBlueprint} onDelete=${deleteBlueprint} onClose=${() => setBpEdit(null)} />`}
+                ${bpEdit && "category" in bpEdit && html`<${CategoryEdit} from=${bpEdit.category} list=${blueprints ?? []} categories=${bpCats} onSave=${saveCategory} onDelete=${deleteCategory} onClose=${() => setBpEdit(null)} />`}
                 <div class="map-status muted">${hover ? (grid ? `square ${cellOf(hover).join(", ")}` : `${Math.round(hover[0])}, ${Math.round(hover[1])}`) : ""} · layer: ${active.name}${active.locked ? " (locked)" : ""}${sel.length ? ` · ${sel.length} selected` : ""}</div>
             </section>
             <aside class="map-side">
-                <div class="tabs side-tabs">${[["stamps", "Stamps"], ["textures", "Textures"], ["inspect", sel.length ? `Selected (${sel.length})` : "Selected"], ["layers", "Layers"], ["pins", "Pins"], ["map", "Map"]].map(([k, l]) => html`<button class=${panel === k ? "on" : ""} onClick=${() => setPanel(k)}>${l}</button>`)}</div>
+                <div class="tabs side-tabs">${[["stamps", "Stamps"], ["blueprints", "Blueprints"], ["textures", "Textures"], ["inspect", sel.length ? `Selected (${sel.length})` : "Selected"], ["layers", "Layers"], ["pins", "Pins"], ["map", "Map"]].map(([k, l]) => html`<button class=${panel === k ? "on" : ""} onClick=${() => setPanel(k)}>${l}</button>`)}</div>
                 <div class="side-body">
+                    ${panel === "blueprints" && html`<${BlueprintLibrary} list=${blueprints} categories=${bpCats} hand=${hand} onPick=${pickBlueprint} onEdit=${(b) => setBpEdit({ blueprint: b })} onCategory=${(c) => setBpEdit({ category: c })} />`}
                     ${panel === "stamps" && html`<${StampLibrary} library=${library} grid=${grid} opt=${opt} onPick=${(s) => { setO({ stamp: s }); if (tool !== "scatter") setTool("stamp"); aspectOf(stampSrc(s)); }} onUpload=${(f) => uploadStamp(f)} />`}
                     ${panel === "textures" && html`<${TexturePanel} lib=${texLib} setLib=${setTexLib} custom=${customTex} opt=${opt} setO=${setO} grid=${grid} useFloor=${(id) => { setO({ floor: id }); setTool(grid ? "floor" : "area"); if (!grid) setO({ areaFill: id }); }} />`}
-                    ${panel === "inspect" && html`<${Inspector} selected=${selected} joinSelected=${joinSelected} separateSelected=${separateSelected} groupSize=${(g) => active.objects.filter((o) => o.type === "room" && o.group === g).length} canRotateRoom=${canRotateRoom()} releaseRoom=${releaseRoom} patchSel=${patchSel} removeSel=${removeSel} duplicate=${duplicate} order=${order} doc=${doc} toLayer=${toLayer} grid=${grid} names=${names} />`}
+                    ${panel === "inspect" && html`<${Inspector} selected=${selected} joinSelected=${joinSelected} separateSelected=${separateSelected} groupSize=${(g) => active.objects.filter((o) => o.type === "room" && o.group === g).length} canRotateRoom=${canRotateRoom()} releaseRoom=${releaseRoom} patchSel=${patchSel} flipSel=${flipSel} removeSel=${removeSel} duplicate=${duplicate} order=${order} doc=${doc} toLayer=${toLayer} grid=${grid} names=${names} />`}
                     ${panel === "layers" && html`<${LayersPanel} doc=${doc} commit=${commit} setSel=${setSel} />`}
                     ${panel === "pins" && html`<${PinsPanel} data=${data} placed=${placedPins} opt=${opt} setO=${setO} setTool=${setTool} onOpen=${(c) => (c.hasMap ? go(mapHref(c.path)) : openInDrawer(noteHref(c.path)))} />`}
                     ${panel === "map" && html`<${MapSettings} doc=${doc} commit=${commit} file=${data.file} />`}
@@ -1586,17 +1949,19 @@ function Editor({ data }) {
 
 // ------------------------------------------------------------------ tool options (floating bar on the canvas)
 
-function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data }) {
+function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data, hand }) {
     const styles = Object.entries(PATH_STYLES).filter(([, s]) => s.modes === "both" || s.modes === (grid ? "grid" : "freeform"));
     const floorSelect = (value, on, label = "Texture") => html`<${Pick} label=${label} value=${value} onChange=${on} options=${texChoices()} />`;
     const body = {
-        select: html`<span class="muted">Click to select, Shift-click to add, drag on empty space to box-select. Double-click a line to add a point, a point to remove it. Del deletes, Ctrl+D duplicates, [ ] reorder. WASD pans.</span>`,
+        select: html`<span class="muted">Click to select, Shift-click to add, drag on empty space (or Ctrl+drag anywhere) to box-select: left to right takes what is wholly inside, right to left what it touches. Double-click a line to add a point, a point to remove it. Del deletes, Ctrl+D duplicates, [ ] reorder. WASD pans.</span>`,
         pan: html`<span class="muted">Drag to pan, or hold W A S D (Shift: faster). Wheel zooms; 0 fits the map.</span>`,
         stamp: html`<span>${opt.stamp ? html`<b>${opt.stamp.name}</b>` : html`<span class="muted">Pick a stamp in the library</span>`}</span>
             <label class="row"><input type="checkbox" checked=${opt.vary} onChange=${(e) => setO({ vary: e.target.checked })} /> Vary (random from the same set)</label>
             <span class="row">Angle <b>${opt.handRot ?? 0}°</b> <button class="small" onClick=${() => setO({ handRot: 0 })} disabled=${!opt.handRot}>Reset</button></span>
             <span class="row">Size <b>${Math.round((opt.handScale ?? 1) * 100)}%</b> <button class="small" onClick=${() => setO({ handScale: 1 })} disabled=${(opt.handScale ?? 1) === 1}>Reset</button></span>
             <span class="muted">Q / E rotate (Shift: 90°), Z / X smaller / larger (Shift: more). Click to place${grid ? ", snapped to the grid (Alt: free)" : ""}; right-click to put it down.</span>`,
+        blueprint: html`<span>${hand ? html`<b>${hand.name}</b> <span class="muted">${hand.category}</span>` : html`<span class="muted">Pick a blueprint in the Blueprints tab</span>`}</span>
+            <span class="muted">Q / E turn it (${grid ? "a quarter turn on a snapped grid; " : ""}Shift: 90°), Shift+H / Shift+V flip it. Click to place${grid ? ", snapped to the grid (Alt: free)" : ""}; right-click to put it down.</span>`,
         scatter: html`<span>${opt.stamp ? html`<b>${opt.stamp.name}</b>` : html`<span class="muted">Pick a stamp</span>`}</span>
             <label class="row"><input type="checkbox" checked=${opt.vary} onChange=${(e) => setO({ vary: e.target.checked })} /> Vary</label>
             <label class="row">Radius <input type="range" min="10" max="300" value=${opt.radius} onInput=${(e) => setO({ radius: +e.target.value })} /></label>
@@ -1608,17 +1973,20 @@ function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data }) {
             <span class="muted">Click points (Enter or double-click ends, Backspace removes the last) or drag to draw freehand.</span>
             ${draft && html`<button class="small" onClick=${() => finishDraft()}>Finish</button>`}`,
         ribbon: html`<span class="row">Kind <${Pick} label="Track or strip" value=${opt.ribbonStyle} onChange=${(v) => setO({ ribbonStyle: v, ribbonCols: RIBBONS[v].cols })} options=${plainChoices(Object.entries(RIBBONS).map(([k, r]) => [k, r.name]))} /></span>
-            <label class="row">Boxes across <input type="number" min="1" max="12" value=${opt.ribbonCols} style="width:56px" onChange=${(e) => setO({ ribbonCols: Math.max(1, +e.target.value) })} /></label>
-            <label class="row">Box size <input type="number" min="8" max="256" value=${opt.ribbonBox} style="width:64px" onChange=${(e) => setO({ ribbonBox: Math.max(8, +e.target.value) })} /> px</label>
+            <label class="row">Boxes across <${Draft} type="number" min="1" max="12" value=${opt.ribbonCols} style="width:56px" onChange=${(e) => setO({ ribbonCols: Math.max(1, +e.target.value) })} /></label>
+            <label class="row">Box size <${Draft} type="number" min="8" max="256" value=${opt.ribbonBox} style="width:64px" onChange=${(e) => setO({ ribbonBox: Math.max(8, +e.target.value) })} /> px</label>
             <label class="row"><input type="checkbox" checked=${opt.ribbonGrid} onChange=${(e) => setO({ ribbonGrid: e.target.checked })} /> Own grid</label>
             <span class="muted">Click points along the centre (Enter ends) or drag freehand. Then double-click the strip to add points and drag them to bend it.</span>
             ${draft && html`<button class="small" onClick=${() => finishDraft()}>Finish</button>`}`,
         roomshape: html`<div class="seg" role="group" aria-label="Add or cut">${[["add", "Add"], ["sub", "Cut away"]].map(([k, l]) => html`<button class=${opt.roomOp === k ? "on" : ""} aria-pressed=${opt.roomOp === k} onClick=${() => setO({ roomOp: k })}>${l}</button>`)}</div>
             <div class="seg" role="group" aria-label="Shape">${[["rect", "Box"], ["circle", "Circle"], ["poly", "Polygon"]].map(([k, l]) => html`<button class=${opt.roomShape === k ? "on" : ""} aria-pressed=${opt.roomShape === k} onClick=${() => setO({ roomShape: k })}>${l}</button>`)}</div>
             <span class="muted">${opt.roomShape === "poly" ? "Click corners, Enter or double-click to finish." : opt.roomShape === "circle" ? "Drag from the centre." : "Drag a box."} Works in the selected room's own grid and angle; walls follow.</span>`,
-        opening: html`<span class="row">Put in <${Pick} label="Put in the wall" value=${opt.openKind} onChange=${(v) => setO({ openKind: v })} options=${plainChoices([["opening", "Opening only"], ["door", "Door"], ["double-door", "Double door"], ["window", "Window"]])} /></span>
-            <span class="row">Width <${Pick} label="Opening width" value=${opt.openLen} onChange=${(v) => setO({ openLen: +v })} options=${plainChoices([1, 2, 3, 4].map((n) => [n, `${n} box${n > 1 ? "es" : ""}`]))} /></span>
-            <span class="muted">Click on a room wall. It turns with the wall.</span>`,
+        opening: html`<span class="row">Put in <${Pick} label="Put in the wall" value=${opt.openKind} onChange=${(v) => setO({ openKind: v })} options=${plainChoices([["opening", "Opening only"], ...Object.entries(WALL_FITTINGS).map(([k, f]) => [k, f.name]), ["wall", "Wall (closes a gap)"]])} /></span>
+            ${WALL_FITTINGS[opt.openKind]?.draw && html`<span class="row">${WALL_FITTINGS[opt.openKind].panels ? "Frame" : "Material"} <${Pick} label="Door material" value=${opt.doorMaterial ?? "wood"} onChange=${(v) => setO({ doorMaterial: v })} options=${plainChoices(Object.entries(DOOR_MATERIALS).map(([k, m]) => [k, m.name]))} /></span>`}
+            ${WALL_FITTINGS[opt.openKind]?.panels && html`<span class="row">Panels <b>${opt.doorPanels ?? 2}</b> <span class="muted">(Q / E)</span></span>`}
+            ${opt.openKind === "window" && html`<span class="row">Panes <b>${opt.openPanes ?? autoPanes(opt.openLen * CELL, CELL)}</b>${opt.openPanes == null ? html` <span class="muted">(to suit the width)</span>` : html` <button class="small" onClick=${() => setO({ openPanes: null })}>To suit the width</button>`}</span>`}
+            <span class="row">Width <${Pick} label="Opening width" value=${opt.openLen} onChange=${(v) => setO({ openLen: +v })} options=${plainChoices([...new Set([0.5, 1, 1.5, 2, 3, 4, 6, 8, opt.openLen])].sort((a, b) => a - b).map((n) => [n, `${n} box${n === 1 ? "" : "es"}`]))} /></span>
+            <span class="muted">${opt.openKind === "wall" ? "Click on a gap in a room wall to close it again; doors and windows in it go too." : `Click on a room wall. It turns with the wall${/sliding|pocket|barn/.test(opt.openKind) ? "; the door is drawn half open (flip it with Shift+H)" : ""}. Z / X narrower / wider (Shift: a whole box)${WALL_FITTINGS[opt.openKind]?.panes ? `; Q / E fewer / more panes` : ""}.`}</span>`,
         unfloor: html`<span class="row">Brush <${Pick} label="Brush size" value=${opt.brush} onChange=${(v) => setO({ brush: +v })} options=${plainChoices([1, 2, 3, 5].map((n) => [n, `${n}×${n}`]))} /></span>
             <span class="muted">Drag to erase painted floor back to the default terrain; Shift-drag erases a rectangle.</span>`,
         area: html`<span class="row">Fill ${floorSelect(opt.areaFill, (v) => setO({ areaFill: v }), "Area fill")}</span>
@@ -1629,7 +1997,7 @@ function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data }) {
             <span class="muted">Drag to paint, Shift-drag fills a rectangle, Alt or right button erases (back to the default terrain).</span>`,
         room: html`<span class="row">Floor ${floorSelect(opt.floor, (v) => setO({ floor: v }), "Room floor")}</span>
             <span class="row">Walls <${Pick} label="Walls" value=${opt.wallStyle} onChange=${(v) => setO({ wallStyle: v })} options=${styleChoices(styles.filter(([k]) => k.startsWith("wall") || k === "fence" || k === "hedge" || k === "iron-railing"))} /></span>
-            <label class="row">Box size <input type="number" min="8" max="256" value=${opt.roomBox ?? CELL} style="width:64px" onChange=${(e) => setO({ roomBox: Math.max(8, +e.target.value) })} /> px</label>
+            <label class="row">Box size <${Draft} type="number" min="8" max="256" value=${opt.roomBox ?? CELL} style="width:64px" onChange=${(e) => setO({ roomBox: Math.max(8, +e.target.value) })} /> px</label>
             <span class="muted">Drag a rectangle. The room is an object: move it, resize it, rotate it (snapping off). Things placed in it move with it.</span>`,
         text: html`<span class="row">Style <${Pick} label="Text style" value=${opt.textStyle} onChange=${(v) => setO({ textStyle: v })} options=${plainChoices(Object.entries(TEXT_STYLES).map(([k, st]) => [k, st.name]))} /></span>
             <span class="muted">Click to place, then type in the Selected panel.</span>`,
@@ -1663,7 +2031,7 @@ function StampLibrary({ library, grid, opt, onPick, onUpload }) {
     const match = (s) => (!style || s.style === style) && (!t || s.name.toLowerCase().includes(t) || s.group.includes(t));
     const toggle = (id) => { const c = new Set(closed); c.has(id) ? c.delete(id) : c.add(id); setClosed(c); store.set("stampGroupsClosed", [...c]); };
     const tile = (s) => html`<button key=${s.id} class=${`stamp-tile ${opt.stamp?.id === s.id ? "on" : ""}`} title=${`${s.name} · ${s.style}`} onClick=${() => onPick(s)}
-        draggable="true" onDragStart=${(e) => e.dataTransfer.setData("application/x-map-stamp", s.id)}><img src=${stampSrc(s)} alt=${s.name} loading="lazy" /></button>`;
+        draggable="true" onDragStart=${(e) => e.dataTransfer.setData("application/x-map-stamp", s.id)}><img src=${viewSrc(stampSrc(s))} alt=${s.name} loading="lazy" /></button>`;
     const section = (id, name, list) => list.length > 0 && html`<section class="stamp-group">
         <button class="group-head" aria-expanded=${!closed.has(id) || !!t} onClick=${() => toggle(id)}><span>${name}</span><span class="muted">${list.length} ${closed.has(id) && !t ? "▸" : "▾"}</span></button>
         ${(!closed.has(id) || t) && html`<div class="stamp-grid">${list.map(tile)}</div>`}
@@ -1683,14 +2051,161 @@ function StampLibrary({ library, grid, opt, onPick, onUpload }) {
     </div>`;
 }
 
+// ------------------------------------------------------------------ blueprints
+
+/** Saved blueprints by category, like the stamp library; a click takes one in hand, a right-click on a blueprint or a
+ * category heading edits it */
+function BlueprintLibrary({ list, categories, hand, onPick, onEdit, onCategory }) {
+    const [q, setQ] = useState("");
+    const [closed, setClosed] = useState(() => new Set(store.get("blueprintGroupsClosed", [])));
+    if (!list) return html`<p class="muted">Loading blueprints…</p>`;
+    const t = q.trim().toLowerCase();
+    const shown = list.filter((b) => !t || b.name.toLowerCase().includes(t) || b.category.toLowerCase().includes(t));
+    // every category (empty ones too, unless searching)
+    const cats = [...new Set([...(t ? [] : categories), ...shown.map((b) => b.category)])].sort((a, b) => a.localeCompare(b));
+    const toggle = (id) => { const c = new Set(closed); c.has(id) ? c.delete(id) : c.add(id); setClosed(c); store.set("blueprintGroupsClosed", [...c]); };
+    const menu = (fn) => (e) => { e.preventDefault(); fn(); };
+    return html`<div class="stamp-library">
+        <input placeholder="Search blueprints…" value=${q} onInput=${(e) => setQ(e.target.value)} style="width:100%" aria-label="Search blueprints" />
+        <div class="row" style="margin:6px 0"><button class="small" onClick=${() => onCategory(null)}>+ New category</button></div>
+        <p class="muted small-note">Select things on the map, right-click and choose Add blueprint… to save them here. Right-click a blueprint or a category to rename, move or delete it.</p>
+        ${!list.length && !categories.length && html`<p class="muted">No blueprints yet.</p>`}
+        ${cats.map((c) => { const items = shown.filter((b) => b.category === c); const open = !closed.has(c) || !!t; return html`<section class="stamp-group" key=${c}>
+            <button class="group-head" aria-expanded=${open} onClick=${() => toggle(c)} onContextMenu=${menu(() => onCategory(c))} title="Right-click to rename or remove"><span>${c}</span><span class="muted">${items.length} ${open ? "▾" : "▸"}</span></button>
+            ${open && (items.length ? html`<div class="stamp-grid blueprint-grid">${items.map((b) => html`<button key=${b.file} class=${`stamp-tile blueprint-tile ${hand?.file === b.file ? "on" : ""}`}
+                title=${`${b.name} · ${b.category} (right-click to edit)`} onClick=${() => onPick(b)} onContextMenu=${menu(() => onEdit(b))}><img src=${b.src} alt="" loading="lazy" /><span>${b.name}</span></button>`)}</div>`
+                : html`<p class="muted small-note">Empty. Save a blueprint here, or move one in.</p>`)}
+        </section>`; })}
+    </div>`;
+}
+
+/** A small dialog: title, fields, buttons; Escape or a click outside closes it, the first field takes focus */
+function SmallDialog({ title, onClose, onSubmit, children }) {
+    const ref = useRef();
+    // (a menu or panel may hand focus to the map as this opens, so take it once the dialog is up)
+    useEffect(() => { setTimeout(() => { const f = ref.current?.querySelector("input"); f?.focus(); f?.select(); }, 0); }, []);
+    useEffect(() => { const k = (e) => { if (e.key === "Escape") onClose(); }; addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
+    return html`<div class="modal-back" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+        <form class="modal blueprint-modal" role="dialog" aria-label=${title} ref=${ref} onSubmit=${(e) => { e.preventDefault(); onSubmit(); }} onKeyDown=${(e) => { e.stopPropagation(); if (e.key === "Escape") onClose(); }}>
+            <div class="spread"><h2 style="margin:0">${title}</h2><button type="button" onClick=${onClose} aria-label="Close">×</button></div>
+            ${children}
+        </form>
+    </div>`;
+}
+
+/** Rename a blueprint, move it to another category (a new one is made by typing it), or delete it */
+function BlueprintEdit({ entry, list, categories, onSave, onDelete, onClose }) {
+    const [name, setName] = useState(entry.name);
+    const [category, setCategory] = useState(entry.category);
+    const [busy, setBusy] = useState(false);
+    const cat = category.trim() || "General";
+    const clash = list.find((b) => b.file !== entry.file && b.category.toLowerCase() === cat.toLowerCase() && b.name.toLowerCase() === name.trim().toLowerCase());
+    const isNew = !categories.some((c) => c.toLowerCase() === cat.toLowerCase());
+    const same = name.trim() === entry.name && cat === entry.category;
+    const submit = async () => { if (!name.trim() || busy || same) return; setBusy(true); await onSave(entry, name.trim(), cat); setBusy(false); };
+    return html`<${SmallDialog} title="Edit blueprint" onClose=${onClose} onSubmit=${submit}>
+        <div class="row"><img src=${entry.src} alt="" class="blueprint-thumb" /></div>
+        <label class="field"><span>Name</span><input value=${name} onInput=${(e) => setName(e.target.value)} required /></label>
+        <label class="field"><span>Category</span><input value=${category} list="blueprint-categories-edit" onInput=${(e) => setCategory(e.target.value)} /></label>
+        <datalist id="blueprint-categories-edit">${categories.map((c) => html`<option value=${c} />`)}</datalist>
+        ${isNew && html`<p class="muted small-note">${cat} is a new category.</p>`}
+        ${clash && html`<p class="warn-note">Replaces the blueprint ${clash.name} in ${clash.category}.</p>`}
+        <div class="spread"><${ConfirmButton} type="button" onConfirm=${() => onDelete(entry)}>Delete<//>
+            <div class="row"><button type="button" onClick=${onClose}>Cancel</button>
+                <button type="submit" class="primary" disabled=${!name.trim() || busy || same}>${clash ? "Replace" : "Save"}</button></div></div>
+    <//>`;
+}
+
+/** A new category (from = null), or rename one (its blueprints move along) or remove it when empty */
+function CategoryEdit({ from, list, categories, onSave, onDelete, onClose }) {
+    const [name, setName] = useState(from ?? "");
+    const target = name.trim();
+    const count = from ? list.filter((b) => b.category === from).length : 0;
+    const into = categories.find((c) => c !== from && c.toLowerCase() === target.toLowerCase());
+    const clashes = into ? list.filter((b) => b.category === from && list.some((x) => x.category === into && x.name.toLowerCase() === b.name.toLowerCase())).length : 0;
+    const submit = () => { if (target && target !== from) onSave(from, target); };
+    return html`<${SmallDialog} title=${from ? "Edit category" : "New category"} onClose=${onClose} onSubmit=${submit}>
+        <label class="field"><span>Name</span><input value=${name} onInput=${(e) => setName(e.target.value)} required /></label>
+        ${from && html`<p class="muted small-note">${count} blueprint${count === 1 ? "" : "s"} in it.</p>`}
+        ${from && into && html`<p class="warn-note">Moves them into ${into}${clashes ? `, replacing ${clashes} blueprint${clashes === 1 ? "" : "s"} of the same name` : ""}.</p>`}
+        ${!from && into && html`<p class="warn-note">${into} exists already.</p>`}
+        <div class="spread">${from ? (count ? html`<span class="muted small-note">Move its blueprints out to remove it.</span>` : html`<${ConfirmButton} type="button" onConfirm=${() => onDelete(from)}>Remove<//>`) : html`<span></span>`}
+            <div class="row"><button type="button" onClick=${onClose}>Cancel</button>
+                <button type="submit" class="primary" disabled=${!target || target === from || (!from && !!into)}>${from ? "Save" : "Add"}</button></div></div>
+    <//>`;
+}
+
+/** Name and category for a new blueprint; an existing name in that category is replaced */
+function BlueprintSave({ init, list, categories = [], onSave, onClose }) {
+    const [name, setName] = useState(init.name ?? "");
+    const [category, setCategory] = useState(init.category ?? "General");
+    const [busy, setBusy] = useState(false);
+    const cats = [...new Set(["General", ...categories, ...list.map((b) => b.category)])].sort((a, b) => a.localeCompare(b));
+    const cat = category.trim() || "General";
+    const clash = list.find((b) => b.category.toLowerCase() === cat.toLowerCase() && b.name.toLowerCase() === name.trim().toLowerCase());
+    const n = init.bp.objects.length;
+    const submit = async (e) => { e.preventDefault(); if (!name.trim() || busy) return; setBusy(true); await onSave({ bp: init.bp, name: name.trim(), category: cat }); setBusy(false); };
+    const nameRef = useRef();
+    // the menu hands focus back to the map as it closes, so take it here once the dialog is up
+    useEffect(() => { setTimeout(() => { nameRef.current?.focus(); nameRef.current?.select(); }, 0); }, []);
+    useEffect(() => { const k = (e) => { if (e.key === "Escape") onClose(); }; addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
+    return html`<div class="modal-back" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+        <form class="modal blueprint-modal" role="dialog" aria-label="Add blueprint" onSubmit=${submit} onKeyDown=${(e) => { e.stopPropagation(); if (e.key === "Escape") onClose(); }}>
+            <div class="spread"><h2 style="margin:0">Add blueprint</h2><button type="button" onClick=${onClose} aria-label="Close">×</button></div>
+            <p class="muted">${n} thing${n === 1 ? "" : "s"}, ${Math.round(init.bp.w)} × ${Math.round(init.bp.h)} px${init.bp.grid ? ` (${Math.ceil(init.bp.w / CELL)} × ${Math.ceil(init.bp.h / CELL)} squares)` : ""}.</p>
+            <label class="field"><span>Name</span><input ref=${nameRef} value=${name} onInput=${(e) => setName(e.target.value)} required /></label>
+            <label class="field"><span>Category</span><input value=${category} list="blueprint-categories" onInput=${(e) => setCategory(e.target.value)} /></label>
+            <datalist id="blueprint-categories">${cats.map((c) => html`<option value=${c} />`)}</datalist>
+            ${clash && html`<p class="warn-note">Replaces the blueprint ${clash.name} in ${clash.category}.</p>`}
+            <div class="row" style="justify-content:flex-end"><button type="button" onClick=${onClose}>Cancel</button>
+                <button type="submit" class="primary" disabled=${!name.trim() || busy}>${clash ? "Replace" : "Save"}</button></div>
+        </form>
+    </div>`;
+}
+
 // ------------------------------------------------------------------ selection inspector
 
-function Inspector({ selected, joinSelected, separateSelected, groupSize, canRotateRoom, releaseRoom, patchSel, removeSel, duplicate, order, doc, toLayer, grid, names }) {
+/** The map's right-click menu: items {label, keys?, run, off?, danger?} and "-" separators. Escape, a click elsewhere
+ * or the mouse wheel close it; arrow keys move between items. */
+function MapMenu({ menu, items, close }) {
+    const ref = useRef();
+    const [pos, setPos] = useState({ x: menu.x, y: menu.y });
+    useLayoutEffect(() => {
+        // keep it inside the canvas
+        const el = ref.current, box = el.parentElement.getBoundingClientRect();
+        setPos({ x: Math.max(4, Math.min(menu.x, box.width - el.offsetWidth - 4)), y: Math.max(4, Math.min(menu.y, box.height - el.offsetHeight - 4)) });
+        el.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+    }, [menu]);
+    useEffect(() => {
+        const away = (e) => { if (!ref.current?.contains(e.target)) close(); };
+        addEventListener("pointerdown", away, true); addEventListener("wheel", close, true); addEventListener("blur", close);
+        return () => { removeEventListener("pointerdown", away, true); removeEventListener("wheel", close, true); removeEventListener("blur", close); };
+    }, []);
+    const onKeyDown = (e) => {
+        // the menu keeps its keys from the map's shortcuts
+        e.stopPropagation();
+        if (e.key === "Escape") { e.preventDefault(); close(); return; }
+        const list = [...ref.current.querySelectorAll("button:not(:disabled)")];
+        const i = list.indexOf(document.activeElement);
+        const next = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: list.length - 1 }[e.key];
+        if (next === undefined || !list.length) return;
+        e.preventDefault();
+        list[(next + list.length) % list.length].focus();
+    };
+    // no separator at either end or twice in a row
+    const shown = items.filter((it, i) => it !== "-" || (i > 0 && i < items.length - 1 && items[i - 1] !== "-"));
+    return html`<div class="map-menu" role="menu" ref=${ref} style=${`left:${pos.x}px;top:${pos.y}px`} onKeyDown=${onKeyDown} onContextMenu=${(e) => e.preventDefault()}>
+        ${shown.map((it) => (it === "-" ? html`<hr />` : html`<button role="menuitem" class=${it.danger ? "danger" : ""} disabled=${it.off}
+            onClick=${() => { close(); it.run(); }}><span>${it.label}</span>${it.keys && html`<kbd>${it.keys}</kbd>`}</button>`))}
+    </div>`;
+}
+
+function Inspector({ selected, joinSelected, separateSelected, groupSize, canRotateRoom, releaseRoom, patchSel, flipSel, removeSel, duplicate, order, doc, toLayer, grid, names }) {
     if (!selected.length) return html`<p class="muted">Nothing selected. Use the select tool (V) and click something on the map.</p>`;
     const o = selected[0];
     const one = selected.length === 1;
     const styles = Object.entries(PATH_STYLES).filter(([, s]) => s.modes === "both" || s.modes === (grid ? "grid" : "freeform"));
-    const num = (label, key, step = 1) => html`<label class="field"><span>${label}</span><input type="number" step=${step} value=${Math.round((o[key] ?? 0) * 10) / 10}
+    const num = (label, key, step = 1) => html`<label class="field"><span>${label}</span><${Draft} type="number" step=${step} value=${Math.round((o[key] ?? 0) * 10) / 10}
         onChange=${(e) => patchSel({ [key]: Number(e.target.value) })} /></label>`;
     return html`<div class="inspector">
         <div class="spread"><b>${one ? ({ stamp: o.name ?? "Stamp", path: PATH_STYLES[o.style]?.name ?? "Line", area: "Area", ribbon: RIBBONS[o.style]?.name ?? "Strip", room: "Room", text: "Text", pin: names.get(linkName(o.location).toLowerCase()) ?? linkName(o.location) }[o.type]) : `${selected.length} things`}</b>
@@ -1699,7 +2214,7 @@ function Inspector({ selected, joinSelected, separateSelected, groupSize, canRot
             <textarea key=${o.id} autoFocus value=${o.text} onInput=${(e) => patchSel({ text: e.target.value })} style="font-family:inherit;min-height:70px" aria-label="Text" />
             <div class="field-grid">
                 <div class="field"><span>Style</span><${Pick} label="Text style" value=${o.style} onChange=${(v) => patchSel({ style: v, size: undefined })} options=${plainChoices(Object.entries(TEXT_STYLES).map(([k, st]) => [k, st.name]))} /></div>
-                <label class="field"><span>Size</span><input type="number" min="6" max="400" value=${o.size ?? TEXT_STYLES[o.style]?.size} onChange=${(e) => patchSel({ size: Number(e.target.value) })} /></label>
+                <label class="field"><span>Size</span><${Draft} type="number" min="6" max="400" value=${o.size ?? TEXT_STYLES[o.style]?.size} onChange=${(e) => patchSel({ size: Number(e.target.value) })} /></label>
                 <label class="field"><span>Colour</span><input type="color" value=${o.color ?? TEXT_STYLES[o.style]?.color} onInput=${(e) => patchSel({ color: e.target.value })} /></label>
                 ${num("Rotation", "rot")}
             </div>`}
@@ -1713,7 +2228,7 @@ function Inspector({ selected, joinSelected, separateSelected, groupSize, canRot
         ${(o.type === "path" || o.type === "area") && one && html`<div class="field-grid">
             ${o.type === "area" && html`<div class="field"><span>Fill</span><${Pick} label="Fill" value=${o.fill} onChange=${(v) => patchSel({ fill: v })} options=${texChoices()} /></div>`}
             <div class="field"><span>${o.type === "area" ? "Edge" : "Style"}</span><${Pick} label=${o.type === "area" ? "Area edge" : "Line style"} value=${o.style ?? "none"} onChange=${(v) => patchSel({ style: v === "none" ? null : v })} options=${styleChoices(styles, o.type === "area" ? [{ value: "none", label: "None" }] : [])} /></div>
-            <label class="field"><span>Width ×</span><input type="number" min="0.2" max="6" step="0.1" value=${o.scale ?? 1} onChange=${(e) => patchSel({ scale: Number(e.target.value) })} /></label>
+            <label class="field"><span>Width ×</span><${Draft} type="number" min="0.2" max="6" step="0.1" value=${o.scale ?? 1} onChange=${(e) => patchSel({ scale: Number(e.target.value) })} /></label>
             <label class="row"><input type="checkbox" checked=${o.smooth ?? PATH_STYLES[o.style]?.smooth} onChange=${(e) => patchSel({ smooth: e.target.checked })} /> Smooth</label>
             ${o.type === "path" && html`<label class="row"><input type="checkbox" checked=${!!o.closed} onChange=${(e) => patchSel({ closed: e.target.checked })} /> Closed loop</label>`}
         </div><p class="muted small-note">Drag the round handles to reshape it.</p>`}
@@ -1723,8 +2238,8 @@ function Inspector({ selected, joinSelected, separateSelected, groupSize, canRot
         <div class="row" style="margin-top:8px">
             ${selected.some((x) => x.type === "stamp" || x.type === "text") && [-90, -10, 10, 90].map((a) => html`<button class="small" title=${`Rotate ${a > 0 ? "right" : "left"} ${Math.abs(a)}°`}
                 onClick=${() => patchSel((x) => (x.type === "stamp" || x.type === "text" ? { rot: (((x.rot ?? 0) + a) % 360 + 360) % 360 } : {}))}>${a < 0 ? "⟲" : "⟳"} ${Math.abs(a)}°</button>`)}
-            ${selected.some((x) => x.type === "stamp") && html`
-                <button class="small" onClick=${() => patchSel((x) => ({ flip: !x.flip }))}>Flip</button>`}
+            <button class="small" title="Flip left to right (Shift+H)" onClick=${() => flipSel("h")}>Flip ↔</button>
+            <button class="small" title="Flip top to bottom (Shift+V)" onClick=${() => flipSel("v")}>Flip ↕</button>
             <button class="small" onClick=${duplicate}>Duplicate</button>
             <button class="small" onClick=${() => order("top")}>To front</button>
             <button class="small" onClick=${() => order("bottom")}>To back</button>
@@ -1744,8 +2259,8 @@ function RibbonFields({ o, patchSel }) {
     return html`<div class="field-grid">
         <div class="field"><span>Kind</span><${Pick} label="Track or strip" value=${o.style} onChange=${(v) => patchSel({ style: v, off: [], extra: [], floor: undefined })} options=${plainChoices(Object.entries(RIBBONS).map(([k, r]) => [k, r.name]))} /></div>
         <div class="field"><span>Base texture</span><${Pick} label="Base texture" value=${floor ?? ""} onChange=${(v) => patchSel({ floor: v || null })} options=${texChoices([{ value: "", label: "None" }])} /></div>
-        <label class="field"><span>Boxes across</span><input type="number" min="1" max="12" value=${o.cols ?? preset.cols} onChange=${(e) => patchSel({ cols: Math.max(1, +e.target.value) })} /></label>
-        <label class="field"><span>Box size (px)</span><input type="number" min="8" max="256" value=${o.box ?? CELL} onChange=${(e) => patchSel({ box: Math.max(8, +e.target.value) })} /></label>
+        <label class="field"><span>Boxes across</span><${Draft} type="number" min="1" max="12" value=${o.cols ?? preset.cols} onChange=${(e) => patchSel({ cols: Math.max(1, +e.target.value) })} /></label>
+        <label class="field"><span>Box size (px)</span><${Draft} type="number" min="8" max="256" value=${o.box ?? CELL} onChange=${(e) => patchSel({ box: Math.max(8, +e.target.value) })} /></label>
         <label class="row"><input type="checkbox" checked=${o.grid ?? true} onChange=${(e) => patchSel({ grid: e.target.checked })} /> Own grid</label>
     </div>
     <div class="field"><span>Parts</span><div class="part-list">${Object.entries(RIBBON_PARTS).map(([k, p]) => html`<label class="row"><input type="checkbox"
@@ -1762,15 +2277,15 @@ function RoomFields({ o, patchSel, canRotate, release }) {
     });
     const walls = Object.entries(PATH_STYLES).filter(([k]) => k.startsWith("wall") || ["fence", "hedge", "iron-railing"].includes(k));
     return html`<div class="field-grid">
-        <label class="field"><span>Width (boxes)</span><input type="number" min="1" max="200" value=${Math.round(o.w / B)} onChange=${(e) => resize(Math.max(1, +e.target.value) * B, o.h)} /></label>
-        <label class="field"><span>Height (boxes)</span><input type="number" min="1" max="200" value=${Math.round(o.h / B)} onChange=${(e) => resize(o.w, Math.max(1, +e.target.value) * B)} /></label>
-        <label class="field"><span>Box size (px)</span><input type="number" min="8" max="256" value=${B} onChange=${(e) => patchSel({ box: Math.max(8, +e.target.value), cells: {} })} /></label>
-        <label class="field"><span>Rotation</span><input type="number" step="10" value=${o.rot ?? 0} disabled=${!canRotate} title=${canRotate ? "" : "Turn snapping off to rotate rooms"} onChange=${(e) => patchSel({ rot: (((+e.target.value) % 360) + 360) % 360 })} /></label>
+        <label class="field"><span>Width (boxes)</span><${Draft} type="number" min="1" max="200" value=${Math.round(o.w / B)} onChange=${(e) => resize(Math.max(1, +e.target.value) * B, o.h)} /></label>
+        <label class="field"><span>Height (boxes)</span><${Draft} type="number" min="1" max="200" value=${Math.round(o.h / B)} onChange=${(e) => resize(o.w, Math.max(1, +e.target.value) * B)} /></label>
+        <label class="field"><span>Box size (px)</span><${Draft} type="number" min="8" max="256" value=${B} onChange=${(e) => patchSel({ box: Math.max(8, +e.target.value), cells: {} })} /></label>
+        <label class="field"><span>Rotation</span><${Draft} type="number" step="10" value=${o.rot ?? 0} disabled=${!canRotate} title=${canRotate ? "" : "Turn snapping off to rotate rooms"} onChange=${(e) => patchSel({ rot: (((+e.target.value) % 360) + 360) % 360 })} /></label>
         <div class="field"><span>Floor</span><${Pick} label="Room floor" value=${o.floor ?? ""} onChange=${(v) => patchSel({ floor: v || null })} options=${texChoices([{ value: "", label: "None (see through)" }])} /></div>
         <div class="field"><span>Walls</span><${Pick} label="Walls" value=${o.wall ?? ""} onChange=${(v) => patchSel({ wall: v || null })} options=${styleChoices(walls, [{ value: "", label: "None" }])} /></div>
         <label class="row"><input type="checkbox" checked=${o.grid ?? true} onChange=${(e) => patchSel({ grid: e.target.checked })} /> Own grid</label>
     </div>
-    ${(o.shapes ?? []).length > 0 && html`<div class="row"><span class="muted">${(o.shapes ?? []).filter((x) => x.op === "add").length} added, ${(o.shapes ?? []).filter((x) => x.op === "sub").length} cut, ${(o.shapes ?? []).filter((x) => x.op === "open").length} openings</span>
+    ${(o.shapes ?? []).length > 0 && html`<div class="row"><span class="muted">${(o.shapes ?? []).filter((x) => x.op === "add").length} added, ${(o.shapes ?? []).filter((x) => x.op === "sub").length} cut, ${(o.shapes ?? []).filter((x) => x.op === "open").length} openings, ${(o.shapes ?? []).filter((x) => x.op === "wall").length} wall pieces</span>
         <button class="small" onClick=${() => patchSel((x) => ({ shapes: (x.shapes ?? []).slice(0, -1) }))}>Undo last shape</button>
         <${ConfirmButton} onConfirm=${() => patchSel({ shapes: [] })}>Clear shapes<//></div>`}
     <p class="muted small-note">${(o.children ?? []).length} things inside. They move and turn with the room. Paint its floor with the floor tools; changing the box size clears painted squares.${canRotate ? "" : " Turn snapping off to rotate it."}</p>
@@ -1811,7 +2326,7 @@ function TexturePanel({ lib, setLib, custom, opt, useFloor }) {
         ${modal}
         <input placeholder="Search textures…" value=${q} onInput=${(e) => setQ(e.target.value)} style="width:100%" aria-label="Search textures" />
         <p class="muted small-note">Each texture is a plain base plus ${24} generated variations; every painted square gets one. Make your own from any texture: aged, recoloured, with extra moss, cracks, rust…</p>
-        ${TEX_GROUPS.map((g) => {
+        ${texGroups().map((g) => {
             const items = Object.entries(TEX).filter(([, f]) => f.group === g && (!t || f.name.toLowerCase().includes(t)));
             return items.length > 0 && html`<section class="stamp-group"><div class="group-head"><span>${g}</span></div>
                 <div class="tex-grid">${items.map(([id, f]) => html`<div class=${`tex-item ${opt.floor === id ? "on" : ""}`}>
@@ -1941,20 +2456,20 @@ function MapSettings({ doc, commit, file }) {
         ${grid ? html`
             <div class="field"><span>Default terrain</span><${Pick} label="Default terrain" value=${doc.terrain} onChange=${(v) => set({ terrain: v })} options=${Object.entries(TERRAINS).map(([k, t]) => ({ value: k, label: t.name, img: texPreviewUrl(t.floor ?? "void", TEX_CUSTOM) }))} /></div>
             <p class="muted small-note">Every square no layer paints shows the default terrain.</p>
-            <label class="field"><span>Columns</span><input type="number" min="2" max="300" value=${cols} onChange=${(e) => set({ width: Math.max(2, +e.target.value) * CELL })} /></label>
-            <label class="field"><span>Rows</span><input type="number" min="2" max="300" value=${rows} onChange=${(e) => set({ height: Math.max(2, +e.target.value) * CELL })} /></label>
-            <label class="field"><span>1 square =</span><span class="row"><input type="number" min="0.1" step="0.5" value=${doc.units.amount} style="width:70px" onChange=${(e) => set({ units: { ...doc.units, amount: +e.target.value } })} />
-                <input value=${doc.units.unit} style="width:60px" onChange=${(e) => set({ units: { ...doc.units, unit: e.target.value } })} /></span></label>
+            <label class="field"><span>Columns</span><${Draft} type="number" min="2" max="300" value=${cols} onChange=${(e) => set({ width: Math.max(2, +e.target.value) * CELL })} /></label>
+            <label class="field"><span>Rows</span><${Draft} type="number" min="2" max="300" value=${rows} onChange=${(e) => set({ height: Math.max(2, +e.target.value) * CELL })} /></label>
+            <label class="field"><span>1 square =</span><span class="row"><${Draft} type="number" min="0.1" step="0.5" value=${doc.units.amount} style="width:70px" onChange=${(e) => set({ units: { ...doc.units, amount: +e.target.value } })} />
+                <${Draft} value=${doc.units.unit} style="width:60px" onChange=${(e) => set({ units: { ...doc.units, unit: e.target.value } })} /></span></label>
             <label class="row"><input type="checkbox" checked=${doc.showGrid} onChange=${(e) => set({ showGrid: e.target.checked })} /> Show grid lines</label>
             <label class="row"><input type="checkbox" checked=${doc.snap} onChange=${(e) => set({ snap: e.target.checked })} /> Snap to grid (Alt overrides)</label>
             <label class="row"><input type="checkbox" checked=${doc.autoJoin !== false} onChange=${(e) => set({ autoJoin: e.target.checked })} /> Rooms join when dragged together</label>
             <p class="muted small-note">Rooms still snap edge to edge when this is off; join them with Ctrl+G.</p>`
         : html`
             <div class="field"><span>Background</span><${Pick} label="Background" value=${doc.backdrop} onChange=${(v) => set({ backdrop: v })} options=${Object.entries(BACKDROPS).map(([k, n]) => ({ value: k, label: n, img: texPreviewUrl(k, TEX_CUSTOM) }))} /></div>
-            <label class="field"><span>Width (px)</span><input type="number" min="200" max="20000" step="100" value=${doc.width} onChange=${(e) => set({ width: +e.target.value })} /></label>
-            <label class="field"><span>Height (px)</span><input type="number" min="200" max="20000" step="100" value=${doc.height} onChange=${(e) => set({ height: +e.target.value })} /></label>
-            <label class="field"><span>${doc.units.per} px =</span><span class="row"><input type="number" min="0.01" step="any" value=${doc.units.amount} style="width:80px" onChange=${(e) => set({ units: { ...doc.units, amount: +e.target.value } })} />
-                <input value=${doc.units.unit} style="width:60px" onChange=${(e) => set({ units: { ...doc.units, unit: e.target.value } })} /></span></label>
+            <label class="field"><span>Width (px)</span><${Draft} type="number" min="200" max="20000" step="100" value=${doc.width} onChange=${(e) => set({ width: +e.target.value })} /></label>
+            <label class="field"><span>Height (px)</span><${Draft} type="number" min="200" max="20000" step="100" value=${doc.height} onChange=${(e) => set({ height: +e.target.value })} /></label>
+            <label class="field"><span>${doc.units.per} px =</span><span class="row"><${Draft} type="number" min="0.01" step="any" value=${doc.units.amount} style="width:80px" onChange=${(e) => set({ units: { ...doc.units, amount: +e.target.value } })} />
+                <${Draft} value=${doc.units.unit} style="width:60px" onChange=${(e) => set({ units: { ...doc.units, unit: e.target.value } })} /></span></label>
             <label class="row"><input type="checkbox" checked=${doc.showGrid} onChange=${(e) => set({ showGrid: e.target.checked })} /> Show a grid</label>`}
         <p class="muted small-note">Saved as <code>${file}</code>. Embed it in any note with <code>![[${file.split("/").pop()}]]</code>.</p>
     </div>`;
