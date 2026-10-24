@@ -30,19 +30,21 @@ npm install
 # a new vault, or the missing pieces of an existing one (never overwrites anything)
 npm run seed -- ~/Documents/Obsidian/books --novel "My First Novel" --world "My World"
 
-# run it
-node server.js --vault ~/Documents/Obsidian/books      # then open http://127.0.0.1:4321
+# run it, then open http://127.0.0.1:4321 and choose your vault folder on the Settings page
+node server.js
 ```
 
-Options: `--vault <folder>`, `--port <n>` (default 4321), `--host <address>` (default 127.0.0.1). The environment variables `BOOKS_VAULT`, `PORT` and `BOOKS_HOST` do the same. There is no default vault folder.
+The vault folder is set on the app's **Settings** page (sidebar → Tools → Settings): type the path or browse to it; folders Obsidian has opened are marked "vault". The app switches to it at once and remembers it in `~/.config/books-meta-viewer/settings.json`. Until a folder is chosen the app shows only that page.
+
+Options: `--vault <folder>` (wins over the Settings page), `--port <n>` (default 4321), `--host <address>` (default 127.0.0.1). The environment variables `BOOKS_VAULT` (used when nothing is chosen on the Settings page), `PORT` and `BOOKS_HOST` do the same.
 
 ### As a service (Linux, systemd user unit)
 
 ```sh
-sh scripts/install-service.sh --vault ~/Documents/Obsidian/books [--port 4321] [--host 127.0.0.1]
+sh scripts/install-service.sh [--vault ~/Documents/Obsidian/books] [--port 4321] [--host 127.0.0.1]
 ```
 
-This installs `~/.config/systemd/user/books-meta-viewer.service` with the vault folder, port and host as its settings, plus this checkout's location and your `node`, then enables and starts it. Each device keeps its own settings, so after cloning onto another machine you only run the script with that machine's vault folder. Run it again to change a setting (the others keep their values); `--dry-run` shows the unit without installing it.
+This installs `~/.config/systemd/user/books-meta-viewer.service` with the port and host (and the vault folder, if you give one) as its settings, plus this checkout's location and your `node`, then enables and starts it. Each device keeps its own settings, so after cloning onto another machine you run the script and choose that machine's vault on the Settings page (or pass `--vault`). Run it again to change a setting (the others keep their values); `--dry-run` shows the unit without installing it.
 
 ```sh
 systemctl --user status books-meta-viewer

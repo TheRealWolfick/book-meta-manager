@@ -4,8 +4,9 @@ import http from "node:http";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { Vault } from "./lib/vault.js";
+import { Vault, SCHEMA_NOTE } from "./lib/vault.js";
 import { Novels } from "./lib/novels.js";
 import { Blueprints } from "./lib/blueprints.js";
 import { DataStore } from "./lib/datastore.js";
@@ -20,28 +21,46 @@ import { foldStock } from "./lib/ledger.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const arg = (name, def) => { const i = process.argv.indexOf(`--${name}`); return i > -1 ? process.argv[i + 1] : def; };
-// the vault folder comes from the service settings (BOOKS_VAULT in the systemd unit) or --vault
-const VAULT_ARG = arg("vault", process.env.BOOKS_VAULT);
-if (!VAULT_ARG) {
-    console.error("No vault folder given. Set BOOKS_VAULT in the service settings (sh scripts/install-service.sh --vault <folder>) or pass --vault <folder>.");
-    process.exit(1);
-}
-const VAULT = path.resolve(VAULT_ARG.replace(/^~(?=\/)/, process.env.HOME));
 const PORT = Number(arg("port", process.env.PORT ?? 4321));
 const HOST = arg("host", process.env.BOOKS_HOST || "127.0.0.1");
-if (!fs.existsSync(VAULT) || !fs.statSync(VAULT).isDirectory()) {
-    console.error(`Vault folder not found: ${VAULT}\nChange it in the service settings (sh scripts/install-service.sh --vault <folder>) or pass --vault <folder>.`);
-    process.exit(1);
-}
+const expand = (p) => path.resolve(String(p).replace(/^~(?=\/|$)/, os.homedir()));
 
-const vault = new Vault(VAULT);
-const novels = new Novels(vault);
-const blueprints = new Blueprints(vault);
-const store = new DataStore(vault, novels, blueprints);
-const plans = new Plans(vault, novels, store);
-const stats = new Stats(vault, novels, store);
-const worlds = new Worlds(vault, store);
-novels.sheetHook = (novel, owner, set) => stats.sheetValues(novel, owner, set);
+// The vault folder: --vault, else the one chosen on the Settings page (settings.json), else BOOKS_VAULT from the
+// service settings. Without one the app starts on its Settings page.
+const SETTINGS_FILE = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "books-meta-viewer", "settings.json");
+const readSettings = () => { try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8")); } catch { return {}; } };
+async function writeSettings(patch) {
+    const next = { ...readSettings(), ...patch };
+    await fsp.mkdir(path.dirname(SETTINGS_FILE), { recursive: true });
+    await fsp.writeFile(SETTINGS_FILE, JSON.stringify(next, null, 2) + "\n");
+}
+const VAULT_SOURCES = [["--vault", arg("vault")], ["settings", readSettings().vault], ["BOOKS_VAULT", process.env.BOOKS_VAULT]];
+const startSource = VAULT_SOURCES.find(([, v]) => v);
+const isFolder = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
+
+let vault = null, novels, blueprints, store, plans, stats, worlds;
+let vaultSource = null, vaultProblem = null, epoch = 0;
+const clients = new Set();
+const version = () => epoch * 1e9 + (vault?.version ?? 0);
+const broadcast = (paths) => { const msg = `data: ${JSON.stringify({ version: version(), paths })}\n\n`; for (const res of clients) res.write(msg); };
+/** open a vault folder (closing the previous one) */
+async function openVault(dir, source) {
+    const next = new Vault(dir);
+    await next.load();
+    vault?.close();
+    vault = next;
+    novels = new Novels(vault);
+    blueprints = new Blueprints(vault);
+    store = new DataStore(vault, novels, blueprints);
+    plans = new Plans(vault, novels, store);
+    stats = new Stats(vault, novels, store);
+    worlds = new Worlds(vault, store);
+    novels.sheetHook = (novel, owner, set) => stats.sheetValues(novel, owner, set);
+    vault.on("change", broadcast);
+    vault.watch();
+    vaultSource = source; vaultProblem = null; epoch++;
+    broadcast([]);
+}
 
 const STATIC = {
     "/": ["public/index.html", "text/html"],
@@ -52,6 +71,8 @@ const STATIC = {
     "/map-core.js": ["public/map-core.js", "text/javascript"],
     "/world.js": ["public/world.js", "text/javascript"],
     "/map-editor.js": ["public/map-editor.js", "text/javascript"],
+    "/map-raster.js": ["public/map-raster.js", "text/javascript"],
+    "/map-paint-worker.js": ["public/map-paint-worker.js", "text/javascript"],
     "/fonts/newsreader-latin.woff2": ["public/fonts/newsreader-latin.woff2", "font/woff2"],
     "/vendor/preact.mjs": ["node_modules/preact/dist/preact.mjs", "text/javascript"],
     "/vendor/hooks.mjs": ["node_modules/preact/hooks/dist/hooks.mjs", "text/javascript"],
@@ -59,11 +80,6 @@ const STATIC = {
 };
 const FILE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", avif: "image/avif", pdf: "application/pdf" };
 
-const clients = new Set();
-vault.on("change", (paths) => {
-    const msg = `data: ${JSON.stringify({ version: vault.version, paths })}\n\n`;
-    for (const res of clients) res.write(msg);
-});
 
 const send = (res, status, body, type = "application/json") => {
     res.writeHead(status, { "content-type": type, "cache-control": "no-store" });
@@ -94,7 +110,34 @@ function entryOut(novel, ledger, e, placed) {
     return { ...e, ledger: ledger.path, ledgerName: ledger.name, owner: ledger.owner, type: ledger.type, callout: novels.callout(novel, ledger, e), placed: placed?.get(`${ledger.name.toLowerCase()}#${e.key}`)?.name ?? null };
 }
 
+// routes that work without a vault
+const SETUP_ROUTES = new Set(["GET /api/settings", "POST /api/settings", "GET /api/settings/folders"]);
 const routes = {
+    "GET /api/settings": () => ({
+        vault: vault?.root ?? null, source: vaultSource, notes: vault?.notes.size ?? 0, problem: vaultProblem,
+        settingsFile: SETTINGS_FILE, overridden: vaultSource === "--vault",
+        looksLikeVault: vault ? isFolder(path.join(vault.root, ".obsidian")) : false,
+        hasSchema: vault ? vault.notes.has(SCHEMA_NOTE) : false,
+    }),
+    "POST /api/settings": async ({ req }) => {
+        const b = await json(req);
+        const dir = expand(need(b.vault, "vault"));
+        if (!isFolder(dir)) throw fail(400, `Not a folder: ${dir}`);
+        if (path.resolve(dir) === path.resolve(HERE) || HERE.startsWith(path.resolve(dir) + path.sep)) throw fail(400, "That folder holds this app; choose your Obsidian vault");
+        await openVault(dir, "settings");
+        await writeSettings({ vault: dir });
+        console.log(`Vault switched to ${dir} (${vault.notes.size} notes)`);
+        return { vault: dir, notes: vault.notes.size };
+    },
+    // sub folders of a folder, for the folder picker on the Settings page
+    "GET /api/settings/folders": async ({ q }) => {
+        const dir = expand(q.get("path") || vault?.root || os.homedir());
+        if (!isFolder(dir)) throw fail(404, `Not a folder: ${dir}`);
+        const ents = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+        const folders = ents.filter((e) => e.isDirectory() && !e.name.startsWith(".")).map((e) => ({ name: e.name, path: path.join(dir, e.name), vault: isFolder(path.join(dir, e.name, ".obsidian")) }))
+            .sort((x, y) => x.name.localeCompare(y.name));
+        return { path: dir, parent: path.dirname(dir) === dir ? null : path.dirname(dir), home: os.homedir(), vault: isFolder(path.join(dir, ".obsidian")), folders };
+    },
     "GET /api/index": () => store.index(),
     "GET /api/note": ({ q }) => {
         const p = need(q.get("path"), "path");
@@ -344,12 +387,12 @@ const server = http.createServer(async (req, res) => {
     try {
         if (req.method === "GET" && url.pathname === "/api/events") {
             res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
-            res.write(`data: ${JSON.stringify({ version: vault.version, paths: [] })}\n\n`);
+            res.write(`data: ${JSON.stringify({ version: version(), paths: [] })}\n\n`);
             clients.add(res);
             req.on("close", () => clients.delete(res));
             return;
         }
-        if (req.method === "GET" && url.pathname.startsWith("/files/")) return await serveFile(res, decodeURIComponent(url.pathname.slice(7)));
+        if (req.method === "GET" && url.pathname.startsWith("/files/") && vault) return await serveFile(res, decodeURIComponent(url.pathname.slice(7)));
         if (req.method === "GET" && url.pathname.startsWith("/stamps/")) return await serveStamp(res, url.pathname);
         if (req.method === "GET" && STATIC[url.pathname]) {
             const [file, type] = STATIC[url.pathname];
@@ -357,6 +400,7 @@ const server = http.createServer(async (req, res) => {
         }
         const route = routes[`${req.method} ${url.pathname}`];
         if (!route) return send(res, 404, { error: "Not found" });
+        if (!vault && !SETUP_ROUTES.has(`${req.method} ${url.pathname}`)) return send(res, 503, { error: "No vault folder chosen yet: open Settings", setup: true });
         if (req.method !== "GET" && req.headers["x-requested-with"] !== "books-meta-viewer") return send(res, 403, { error: "Missing request header" });
         const out = await route({ req, q: url.searchParams });
         send(res, 200, out ?? {});
@@ -366,8 +410,12 @@ const server = http.createServer(async (req, res) => {
     }
 });
 
-await vault.load();
-vault.watch();
+if (startSource) {
+    const [source, value] = startSource;
+    const dir = expand(value);
+    if (isFolder(dir)) await openVault(dir, source);
+    else { vaultProblem = `Vault folder not found: ${dir} (from ${source})`; console.error(`${vaultProblem}. Choose one on the Settings page.`); }
+} else console.error("No vault folder set yet. Choose one on the Settings page.");
 server.listen(PORT, HOST, () => {
-    console.log(`Books meta viewer: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}  (vault: ${VAULT}, ${vault.notes.size} notes)`);
+    console.log(`Books meta viewer: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}  (${vault ? `vault: ${vault.root}, ${vault.notes.size} notes` : "no vault yet: open Settings"})`);
 });

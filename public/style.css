@@ -528,3 +528,15 @@ button.on-chip { background: var(--text); color: var(--bg); }
 .tex-modal-foot { border-top: 1px solid var(--line); padding-top: 10px; }
 @media (max-width: 900px) { .tex-modal-body { grid-template-columns: 1fr; overflow-y: auto; } .tex-modal-settings { overflow: visible; } .detail-row { grid-template-columns: 22px 1fr 1fr; } .detail-row.head { display: none; } }
 .overlay .group-box { fill: none; stroke: #6a4fc4; stroke-dasharray: 2 4; opacity: .8; vector-effect: non-scaling-stroke; }
+
+/* settings: vault folder */
+.settings { max-width: 860px; }
+.settings-path { gap: 8px; margin: 10px 0 4px; }
+.settings-path input { flex: 1; min-width: 0; font-family: ui-monospace, monospace; }
+.folder-picker .row { gap: 8px; align-items: center; flex-wrap: wrap; }
+.folder-picker .picker-here { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.folders { list-style: none; margin: 10px 0 0; padding: 0; max-height: 420px; overflow: auto; border-top: 1px solid var(--line); }
+.folders li { display: flex; align-items: center; gap: 6px; padding: 4px 2px; border-bottom: 1px solid var(--line); }
+.folders button.link { background: none; border: none; padding: 2px 0; color: var(--text); cursor: pointer; text-align: left; }
+.folders button.link::before { content: "▸ "; color: var(--muted); }
+.folders button.link:hover { color: var(--accent); }

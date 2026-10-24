@@ -45,7 +45,7 @@ const routes = [
     `#/edit/${enc(firstOf("Items"))}`, "#/new/Items", `#/newchar/${enc(novel.folder)}`,
     `#/novel/${enc(novel.folder)}`, owner && `#/owner/${enc(novel.folder)}/${enc(owner)}`,
     `#/chapter/${enc(novel.folder)}/${novel.latestChapter}`, `#/entry/${enc(novel.folder)}?owner=${enc(owner ?? "")}&type=Inventory`,
-    `#/callouts/${enc(novel.folder)}`, "#/qa",
+    `#/callouts/${enc(novel.folder)}`, "#/qa", "#/settings",
 ].filter(Boolean);
 
 let failed = 0;
@@ -504,6 +504,27 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
     check(!fs.existsSync(`${COPY}/${path}`) && fs.existsSync(`${COPY}/.trash/Smoke Delete Plot.md`), "second click moves the note to .trash", w.location.hash);
     const r = await send("DELETE", `/api/note?path=${enc(`${novel.folder}/config.md`)}`);
     check(r.status === 400 && fs.existsSync(`${COPY}/${novel.folder}/config.md`), "config notes can't be deleted", JSON.stringify(r));
+}
+// settings: the vault folder can be browsed and switched (the test server keeps its settings in SETTINGS_DIR)
+if (process.env.SETTINGS_DIR) {
+    const doc = w.document;
+    const send = (method, p, body) => realFetch(new URL(p, BASE), { method, headers: { "x-requested-with": "books-meta-viewer", "content-type": "application/json" }, body: body && JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+    w.location.hash = "#/settings";
+    await wait(900);
+    check(doc.querySelector("main")?.textContent.includes(COPY) && [...doc.querySelectorAll(".folders button.link")].some((b) => b.textContent === "80. Global Data Store"),
+        "settings page shows the vault folder and browses its folders");
+    const notesBefore = (await get("/api/index")).notes.length;
+    const other = `${process.env.SETTINGS_DIR}/Other Vault`;
+    fs.mkdirSync(`${other}/.obsidian`, { recursive: true });
+    fs.writeFileSync(`${other}/Hello.md`, "# Hello\n");
+    const listed = await get(`/api/settings/folders?path=${enc(process.env.SETTINGS_DIR)}`);
+    check(listed.folders.some((f) => f.name === "Other Vault" && f.vault), "the folder picker marks Obsidian vaults");
+    check((await send("POST", "/api/settings", { vault: `${other}/missing` })).status === 400, "a folder that doesn't exist is refused");
+    const r = await send("POST", "/api/settings", { vault: other });
+    const saved = JSON.parse(fs.readFileSync(`${process.env.SETTINGS_DIR}/books-meta-viewer/settings.json`, "utf8"));
+    check(r.notes === 1 && (await get("/api/settings")).vault === other && saved.vault === other, "switching the vault opens it and saves the choice", JSON.stringify(r));
+    await send("POST", "/api/settings", { vault: COPY });
+    check((await get("/api/index")).notes.length === notesBefore, "switching back opens the first vault again");
 }
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);

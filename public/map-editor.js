@@ -6,10 +6,12 @@ import { h } from "preact";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
 import htm from "htm";
 import { api, toast, store, go, noteHref, openInDrawer, markDirty, Loading, ConfirmButton } from "./app.js";
+import { canPaint, paintFloorChunk, roomTiles, paintRoomTile, ribbonPieceBoxes, paintRibbonPiece, toUrl, releaseUrl } from "./map-raster.js";
 import {
     CELL, TERRAINS, BACKDROPS, PATH_STYLES, TEXT_STYLES, newMap, uid, viewLayers, layerSvg, backgroundSvg, gridSvg,
-    textureCatalog, texturesDefs, texturePreview, resolveTexture, usedFloors, DETAILS, DETAIL_COLORS, detailRows, bounds, textureTileSvg, TILE_PX, moveObject, pathD, unitsPerPx, layerParts, objectSvg, sampleCurve, RIBBONS, RIBBON_PARTS,
-    toRoom, fromRoom, inRoom, anchorOf, rehome, touchesBox, ribbonPieces, roomBaseSvg, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg,
+    textureCatalog, texturesDefs, texturePreview, resolveTexture, usedFloors, DETAILS, DETAIL_COLORS, detailRows, bounds, textureTileSvg, TILE_PX,
+    floorSvg, moveObject, pathD, unitsPerPx, layerParts, objectSvg, sampleCurve, RIBBONS, RIBBON_PARTS,
+    toRoom, fromRoom, inRoom, anchorOf, rehome, touchesBox, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg,
 } from "./map-core.js";
 
 const html = htm.bind(h);
@@ -84,51 +86,124 @@ function rasterTexture(key, id, custom) {
 }
 
 // Finished ribbons (rail track, roads…) are drawn from bitmaps too: each piece of 6 boxes becomes one image.
-const ribbonRasters = new Map(); // key -> [{x, y, w, h, url}] | Promise | null
 const ribbonKey = (o, custom) => { const f = o.floor === undefined ? RIBBONS[o.style]?.floor : o.floor; return JSON.stringify([o.style, o.pts, o.cols, o.box, o.grid, f, o.off, o.extra, o.smooth, custom[f] ?? null]); };
-const drawToUrl = (svgText, w, h) => new Promise((resolve) => {
-    const src = URL.createObjectURL(new Blob([svgText], { type: "image/svg+xml" }));
-    const img = new Image();
-    img.onload = () => {
-        try {
-            const cv = document.createElement("canvas");
-            cv.width = w; cv.height = h;
-            cv.getContext("2d").drawImage(img, 0, 0, w, h);
-            cv.toBlob((b) => { URL.revokeObjectURL(src); resolve(b ? URL.createObjectURL(b) : null); }, "image/png");
-        } catch { URL.revokeObjectURL(src); resolve(null); }
-    };
-    img.onerror = () => { URL.revokeObjectURL(src); resolve(null); };
-    img.src = src;
-});
-// Rooms too: floor, painted squares, grid and walls become one bitmap (the things inside stay separate)
-const roomRasters = new Map(); // key -> {x, y, w, h, url} | Promise | null
-const MAX_ROOM_PX = 4096;
-function rasterRoom(key, o, custom) {
-    if (roomRasters.has(key)) return roomRasters.get(key);
-    const ext = roomBaseSvg(o, custom, 1);
-    const scale = Math.min(RASTER_SCALE, MAX_ROOM_PX / Math.max(ext.w, ext.h));
-    const pc = roomBaseSvg(o, custom, scale);
-    const job = drawToUrl(pc.svg, Math.ceil(pc.w * scale), Math.ceil(pc.h * scale)).then((url) => {
-        const out = url ? { x: pc.x, y: pc.y, w: pc.w, h: pc.h, url } : null;
-        roomRasters.set(key, out);
-        // keep memory in check: forget the oldest bitmaps
-        if (roomRasters.size > 120) for (const [k, v] of roomRasters) { if (roomRasters.size <= 100) break; if (v && typeof v.url === "string") URL.revokeObjectURL(v.url); roomRasters.delete(k); }
-        return out;
-    });
-    roomRasters.set(key, job);
+// Bitmaps are made at the resolution the zoom needs (lod = bitmap px per map px, in powers of two), so they stay
+// sharp however far you zoom in; a few drawing jobs run at a time, the oldest bitmaps are dropped when there are many.
+const lodFor = (z) => Math.min(8, Math.max(1 / 32, 2 ** Math.ceil(Math.log2(Math.max(1e-6, z * (globalThis.devicePixelRatio || 1)) - 1e-9))));
+const jobs = [];
+let running = 0, currentLod = 1;
+/** queue a drawing job; jobs for a resolution the view has left are dropped (and can be asked for again) */
+const enqueue = (fn, lod, drop) => new Promise((resolve) => { jobs.push([fn, resolve, lod, drop]); pump(); });
+function pump() {
+    while (running < 2 && jobs.length) {
+        const [fn, resolve, lod, drop] = jobs.shift();
+        if (lod != null && lod !== currentLod) { drop?.(); resolve(null); continue; }
+        running++;
+        fn().catch((e) => { console.warn("map bitmap:", e); return null; }).then((r) => { running--; resolve(r); pump(); });
+    }
+}
+const urlsOf = (v) => (typeof v === "string" ? [v] : Array.isArray(v) ? v.map((x) => x?.url).filter(Boolean) : v?.url ? [v.url] : []);
+function remember(cache, key, value, max) {
+    cache.set(key, value);
+    if (cache.size > max) {
+        // URLs still used as a stand-in at another resolution stay alive
+        const shown = new Set([...latest.values()].flatMap(urlsOf));
+        for (const [k, v] of cache) { if (cache.size <= max * 0.8) break; if (!(v instanceof Promise)) { for (const u of urlsOf(v)) if (!shown.has(u)) releaseUrl(u); cache.delete(k); } }
+    }
+}
+/** cache lookup with a fallback: the newest bitmap of the same thing at any resolution, shown while the right one is drawn */
+const latest = new Map(); // look key -> value at some lod (bounded like the caches; entries are shared with them)
+const setLatest = latest.set.bind(latest);
+latest.set = (k, v) => { setLatest(k, v); if (latest.size > 600) for (const key of latest.keys()) { latest.delete(key); if (latest.size <= 480) break; } return latest; };
+
+// Rooms (floor, painted squares, grid and walls; the things inside stay separate) and finished ribbons (rail track,
+// roads…) are drawn from bitmaps of pieces: room tiles of at most 1024 px, ribbon pieces of 6 boxes. The whole thing
+// is kept at a modest resolution (the stand-in, never dropped); closer in, only the pieces near the view are painted
+// sharp and drawn over it, so a large room or long track never paints what is off screen.
+const pieceRasters = new Map(); // look|scale|x,y -> {x, y, w, h, url} | Promise | null
+function rasterPiece(key, box, paint, lodTag) {
+    if (pieceRasters.has(key)) return pieceRasters.get(key);
+    const job = enqueue(() => paint().then((url) => {
+        const piece = url ? { ...box, url } : null;
+        remember(pieceRasters, key, piece, 300);
+        return piece;
+    }), lodTag, () => pieceRasters.delete(key));
+    pieceRasters.set(key, job);
     return job;
 }
-function rasterRibbon(key, o, custom) {
-    if (ribbonRasters.has(key)) return ribbonRasters.get(key);
-    const job = Promise.all(ribbonPieces(o, custom, RASTER_SCALE).map(async (pc) => ({ ...pc, svg: undefined, url: await drawToUrl(pc.svg, Math.ceil(pc.w * RASTER_SCALE), Math.ceil(pc.h * RASTER_SCALE)) })))
-        .then((pieces) => {
-            const ok = pieces.every((x) => x.url) ? pieces : null;
-            ribbonRasters.set(key, ok);
-            if (ribbonRasters.size > 80) for (const [k, v] of ribbonRasters) { if (ribbonRasters.size <= 60) break; if (Array.isArray(v)) v.forEach((x) => URL.revokeObjectURL(x.url)); ribbonRasters.delete(k); }
-            return ok;
-        });
-    ribbonRasters.set(key, job);
+const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+const pow2Below = (v) => 2 ** Math.floor(Math.log2(Math.max(v, 1e-6)));
+/**
+ * the bitmap pieces to show now, asking for missing ones (done() runs when one arrives). boxes(scale) lists the
+ * pieces, paint(scale, box, i) draws one; near {x, y, w, h} (in the pieces' coordinates) picks the sharp ones.
+ */
+function pieceBitmaps({ look, standin, sharp, near, boxes, paint, done }) {
+    const want = (scale, list, lodTag) => list.map(([b, i]) => {
+        const key = `${look}|${scale}|${b.x},${b.y}`;
+        let r = pieceRasters.get(key);
+        if (r === undefined) { r = rasterPiece(key, b, () => paint(scale, b, i), lodTag); r.then(done); }
+        return r && !(r instanceof Promise) ? r : null;
+    });
+    const base = want(standin, boxes(standin).map((b, i) => [b, i]), null);
+    let out;
+    if (base.every(Boolean)) { out = base; latest.set(look, base); } else out = latest.get(look) ?? [];
+    if (sharp > standin && near) out = out.concat(want(sharp, boxes(sharp).map((b, i) => [b, i]).filter(([b]) => overlaps(b, near)), currentLod).filter(Boolean));
+    return out;
+}
+const STANDIN_PX = 2048;
+const TILE_BMP = 1024;
+function roomBitmaps(o, look, lod, region, custom, texKey, done) {
+    const e = roomExtent(o);
+    let near = null;
+    if (region) {
+        // the region in room coordinates (the room may be turned)
+        const ps = [[region.x, region.y], [region.x + region.w, region.y], [region.x, region.y + region.h], [region.x + region.w, region.y + region.h]].map((p) => toRoom(o, p));
+        const xs = ps.map((p) => p[0]), ys = ps.map((p) => p[1]);
+        near = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    }
+    return pieceBitmaps({
+        look, standin: Math.min(lod, pow2Below(STANDIN_PX / Math.max(e.w, e.h, 1))), sharp: Math.min(lod, 8), near,
+        boxes: (scale) => roomTiles(o, scale), paint: (scale, b) => paintRoomTile(o, custom, scale, texKey, b), done,
+    });
+}
+function ribbonBitmaps(o, look, lod, region, custom, texKey, done) {
+    const one = ribbonPieceBoxes(o, custom, 1);
+    const big = Math.max(1, ...one.map((b) => Math.max(b.w, b.h)));
+    return pieceBitmaps({
+        look, standin: Math.max(0.25, Math.min(lod, pow2Below(1024 / big))), sharp: Math.max(0.25, Math.min(lod, 4)), near: region,
+        boxes: (scale) => ribbonPieceBoxes(o, custom, scale), paint: (scale, b, i) => paintRibbonPiece(o, custom, scale, texKey, i).then((cv) => toUrl(cv)), done,
+    });
+}
+
+// Floors (terrain and painted squares) are drawn in chunks: one 1024 px image per chunk, at the zoom's resolution.
+// Zoomed out a chunk covers many squares, zoomed in only a few, so only a handful of images are ever on screen.
+const CHUNK_BMP = 1024;
+const chunkRasters = new Map(); // key -> url | Promise | null
+const quickHash = (t) => { let h = 5381; for (let i = 0; i < t.length; i++) h = ((h << 5) + h + t.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
+function rasterChunk(key, look, spec) {
+    if (chunkRasters.has(key)) return chunkRasters.get(key);
+    const job = enqueue(() => paintFloorChunk({ ...spec, px: CHUNK_BMP }).then((url) => { remember(chunkRasters, key, url, 220); if (url) latest.set(look, url); return url; }), spec.lod, () => chunkRasters.delete(key));
+    chunkRasters.set(key, job);
     return job;
+}
+/** painted squares of a floor map by chunk (with a one-square margin, since details spill over edges) */
+const chunkIndex = new WeakMap();
+function floorByChunk(floor, S) {
+    let byS = chunkIndex.get(floor);
+    if (!byS) { byS = new Map(); chunkIndex.set(floor, byS); }
+    if (byS.has(S)) return byS.get(S);
+    const m = new Map();
+    for (const e of Object.entries(floor)) {
+        const [c, r] = e[0].split(",").map(Number);
+        for (let cy = Math.floor(((r - 1) * CELL) / S); cy <= Math.floor(((r + 2) * CELL - 1) / S); cy++) for (let cx = Math.floor(((c - 1) * CELL) / S); cx <= Math.floor(((c + 2) * CELL - 1) / S); cx++) {
+            const k = `${cx},${cy}`;
+            if (!m.has(k)) m.set(k, []);
+            m.get(k).push(e);
+        }
+    }
+    const out = new Map([...m].map(([k, list]) => [k, { entries: list, hash: quickHash(JSON.stringify(list)) }]));
+    byS.set(S, out);
+    return out;
 }
 
 // ------------------------------------------------------------------ geometry helpers
@@ -1069,31 +1144,37 @@ function Editor({ data }) {
 
     // ---------------------------------------------------------------- rendering
     const names = useMemo(() => new Map(data.children.map((c) => [c.name.toLowerCase(), c.title])), [data.children]);
-    const [rasterTick, setRasterTick] = useState(0);
+    const [rasterTick, setRasterTickNow] = useState(0);
+    const tickPending = useRef(false);
+    const setRasterTick = () => { if (tickPending.current) return; tickPending.current = true; requestAnimationFrame(() => { tickPending.current = false; setRasterTickNow((t) => t + 1); }); };
     const selKey = sel.join(",");
+    // bitmaps follow the zoom once it settles (while zooming, the current ones are just scaled)
+    const zoomLod = lodFor(v.z);
+    const [lod, setLod] = useState(zoomLod);
+    useEffect(() => { if (zoomLod === lod) return; const t = setTimeout(() => setLod(zoomLod), 220); return () => clearTimeout(t); }, [zoomLod, lod]);
+    currentLod = lod;
+    const texKeyOf = (id) => `${id}|${JSON.stringify(customTex[id] ?? null)}|${JSON.stringify(customTex[customTex[id]?.from] ?? null)}`;
+    const regionRef = useRef(null);
     const ctx = useMemo(() => ({
         edit: true, stampHref: (o) => o.src, pinLabel: (o) => names.get(linkName(o.location).toLowerCase()) ?? linkName(o.location),
         // selected ribbons stay vector (they are being edited); the rest use bitmaps of their pieces once drawn
         ribbonImage: (o) => {
-            if (!canRaster() || sel.includes(o.id)) return null;
-            const key = ribbonKey(o, customTex);
-            const r = ribbonRasters.get(key);
-            if (r === undefined) { rasterRibbon(key, o, customTex).then(() => setRasterTick((t) => t + 1)); return null; }
-            if (!Array.isArray(r)) return null;
+            if (!canPaint() || sel.includes(o.id)) return null;
+            const r = ribbonBitmaps(o, `rb|${ribbonKey(o, customTex)}`, lod, regionRef.current, customTex, texKeyOf, () => setRasterTick((t) => t + 1));
+            if (!r.length) return null;
             return r.map((pc) => `<image href="${pc.url}" x="${pc.x}" y="${pc.y}" width="${pc.w}" height="${pc.h}" preserveAspectRatio="none"/>`).join("");
         },
         // rooms keep their bitmap while moved or turned; changing the room itself draws a new one (vector meanwhile)
         roomImage: (o) => {
-            if (!canRaster()) return null;
+            if (!canPaint()) return null;
             // mid-stroke (painting, reshaping, resizing) the room stays live; the bitmap is made when you let go
             if (["paint", "rect", "resize", "roomshape"].includes(dragRef.current?.kind)) return null;
-            const key = `${roomLookKey(o)}|${JSON.stringify([o.floor, ...Object.values(o.cells ?? {})].map((f) => customTex[f] ?? null))}`;
-            const r = roomRasters.get(key);
-            if (r === undefined) { rasterRoom(key, o, customTex).then(() => setRasterTick((t) => t + 1)); return null; }
-            if (!r || typeof r.url !== "string") return null;
-            return `<image href="${r.url}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" preserveAspectRatio="none"/>`;
+            const look = `rm|${roomLookKey(o)}|${JSON.stringify([o.floor, ...Object.values(o.cells ?? {})].map((f) => customTex[f] ?? null))}`;
+            const r = roomBitmaps(o, look, lod, regionRef.current, customTex, texKeyOf, () => setRasterTick((t) => t + 1));
+            if (!r.length) return null;
+            return r.map((t) => `<image href="${t.url}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" preserveAspectRatio="none"/>`).join("");
         },
-    }), [names, selKey, customTex, rasterTick]);
+    }), [names, selKey, customTex, rasterTick, lod]);
     const cache = useRef(new WeakMap());
     // only what is on screen (plus a margin) is drawn; the region moves in 512 px steps so panning rarely rebuilds it
     const STEP = 512;
@@ -1101,35 +1182,89 @@ function Editor({ data }) {
     const rx0 = Math.floor((v.x - vw / 2) / STEP) * STEP, ry0 = Math.floor((v.y - vh / 2) / STEP) * STEP;
     const region = { x: rx0, y: ry0, w: Math.ceil((v.x + vw * 1.5 - rx0) / STEP) * STEP, h: Math.ceil((v.y + vh * 1.5 - ry0) / STEP) * STEP };
     const regionKey = `${region.x},${region.y},${region.w},${region.h}`;
+    // sharp room tiles and ribbon pieces are painted only for the view plus one tile, snapped to the tile size
+    const TT = TILE_BMP / lod;
+    const nearX = Math.floor(v.x / TT) - 1, nearY = Math.floor(v.y / TT) - 1;
+    regionRef.current = { x: nearX * TT, y: nearY * TT, w: (Math.ceil(vw / TT) + 3) * TT, h: (Math.ceil(vh / TT) + 3) * TT };
+    const nearKey = `${nearX},${nearY}`;
     const markup = (l) => {
         let s = cache.current.get(l);
-        const key = `${regionKey}|${selKey}|${rasterTick}`;
+        const key = `${regionKey}|${nearKey}|${selKey}|${rasterTick}|${lod}`;
         if (!s || s.key !== key) { s = { key, ...layerParts(l, ctx, region) }; cache.current.set(l, s); }
         return s;
     };
     // only the textures this map shows or the tools are about to paint
     const needTex = [...new Set([...usedFloors(doc, customTex), opt.floor, opt.areaFill, RIBBONS[opt.ribbonStyle]?.floor, TERRAINS[doc.terrain]?.floor, doc.backdrop].filter(Boolean))].sort();
     const texKey = `${needTex.join(",")}|${JSON.stringify(needTex.map((id) => customTex[id] ?? null))}`;
-    const texKeyOf = (id) => `${id}|${JSON.stringify(customTex[id] ?? null)}|${JSON.stringify(customTex[customTex[id]?.from] ?? null)}`;
     useEffect(() => {
         if (!canRaster()) return;
         let live = true;
         for (const id of needTex) { const k = texKeyOf(id); const r = rasters.get(k); if (r === undefined) rasterTexture(k, id, customTex).then(() => live && setRasterTick((t) => t + 1)); }
         return () => { live = false; };
     }, [texKey]);
+    // texture patterns are bitmaps; zoomed in past RASTER_SCALE, area fills (the only thing still filled with a
+    // pattern once floors, rooms and ribbons are bitmaps) switch to the vector texture so they stay sharp
+    const vectorTex = lod > RASTER_SCALE;
+    const areaTex = vectorTex ? [...new Set([
+        ...doc.layers.flatMap((l) => l.objects.flatMap((x) => (x.type === "room" ? x.children ?? [] : [x]))).filter((o) => o.type === "area").map((o) => o.fill ?? "parchment"),
+        ...(tool === "area" ? [opt.areaFill] : []),
+    ])].filter((id) => needTex.includes(id)).sort() : [];
     const patterns = useMemo(() => (canRaster()
-        ? needTex.map((id) => {
+        ? needTex.filter((id) => !areaTex.includes(id)).map((id) => {
             const url = rasters.get(texKeyOf(id));
             const t = resolveTexture(id, customTex);
             return typeof url === "string"
                 ? `<pattern id="f-${id}" width="${TILE_PX}" height="${TILE_PX}" patternUnits="userSpaceOnUse"><image href="${url}" width="${TILE_PX}" height="${TILE_PX}" preserveAspectRatio="none"/></pattern>`
                 : `<pattern id="f-${id}" width="${CELL}" height="${CELL}" patternUnits="userSpaceOnUse"><rect width="${CELL}" height="${CELL}" fill="${t?.color ?? "#777"}"/></pattern>`;
-        }).join("")
+        }).join("") + texturesDefs(areaTex, customTex)
         : texturesDefs(needTex, customTex))
-        + `<pattern id="grid-lines-ed" width="${CELL}" height="${CELL}" patternUnits="userSpaceOnUse"><path d="M${CELL} 0H0V${CELL}" fill="none" stroke="rgba(0,0,0,.28)" stroke-width="1"/></pattern>`, [texKey, rasterTick]);
+        + `<pattern id="grid-lines-ed" width="${CELL}" height="${CELL}" patternUnits="userSpaceOnUse"><path d="M${CELL} 0H0V${CELL}" fill="none" stroke="rgba(0,0,0,.28)" stroke-width="1"/></pattern>`, [texKey, rasterTick, areaTex.join()]);
     const vb = `${v.x} ${v.y} ${size.w / v.z} ${size.h / v.z}`;
     const cursor = space || tool === "pan" ? (dragRef.current?.kind === "pan" ? "grabbing" : "grab") : tool === "select" ? "default" : tool === "erase" ? "not-allowed" : "crosshair";
     const hs = 7 / v.z; // handle size in map units
+    // floors in chunks: which chunks the view needs (a quarter screen margin), each an image once drawn
+    const useChunks = canPaint();
+    const S = CHUNK_BMP / lod;
+    const painting = ["paint", "rect"].includes(dragRef.current?.kind);
+    const chunkCells = useMemo(() => {
+        const out = [];
+        const m = 0.25;
+        for (let cy = Math.floor((v.y - vh * m) / S); cy <= Math.floor((v.y + vh * (1 + m)) / S); cy++) for (let cx = Math.floor((v.x - vw * m) / S); cx <= Math.floor((v.x + vw * (1 + m)) / S); cx++) out.push([cx, cy]);
+        return out;
+    }, [Math.floor(v.x / (S / 4)), Math.floor(v.y / (S / 4)), S, vw, vh]);
+    const bump = () => setRasterTick((t) => t + 1);
+    const chunkImage = (look, key, spec, fallback) => {
+        const r = chunkRasters.get(key);
+        if (r === undefined && !(painting && spec.entries) && chunkCells.length <= 64) rasterChunk(key, look, { ...spec, texKey: texKeyOf }).then(bump);
+        const url = typeof r === "string" ? r : latest.get(look);
+        return typeof url === "string" ? `<image href="${url}" x="${spec.x}" y="${spec.y}" width="${spec.S}" height="${spec.S}" preserveAspectRatio="none"/>` : fallback();
+    };
+    const terrainFloor = grid ? TERRAINS[doc.terrain]?.floor ?? "void" : doc.backdrop ?? "parchment";
+    // right after zooming out the chunks are still the size for the old zoom and there can be thousands; until the
+    // resolution settles (a fraction of a second) the terrain is one rectangle in the texture's colour (a pattern
+    // shrunk that far is slow to paint) and painted squares are their paths
+    const tooMany = chunkCells.length > 64;
+    const terrainChunks = () => tooMany ? `<rect x="${region.x}" y="${region.y}" width="${region.w}" height="${region.h}" fill="${resolveTexture(terrainFloor, customTex)?.color ?? "#888"}"/>` : chunkCells.map(([cx, cy]) => {
+        const x = cx * S, y = cy * S;
+        const look = `t|${terrainFloor}|${quickHash(JSON.stringify(customTex[terrainFloor] ?? null))}|${cx * S},${cy * S},${S}`;
+        return chunkImage(look, `${look}|${lod}`, { x, y, S, lod, terrain: terrainFloor, custom: customTex }, () => `<rect x="${x}" y="${y}" width="${S}" height="${S}" fill="url(#f-${terrainFloor})"/>`);
+    }).join("");
+    const floorChunks = (l) => {
+        if (!Object.keys(l.floor ?? {}).length) return "";
+        if (tooMany) return floorSvg(l.floor);
+        const idx = floorByChunk(l.floor, S);
+        return chunkCells.map(([cx, cy]) => {
+            const c = idx.get(`${cx},${cy}`);
+            if (!c) return "";
+            const x = cx * S, y = cy * S;
+            const look = `f|${c.hash}|${quickHash(JSON.stringify([...new Set(c.entries.map((e) => e[1]))].map((f) => customTex[f] ?? null)))}|${x},${y},${S}`;
+            return chunkImage(look, `${look}|${lod}`, { x, y, S, lod, entries: c.entries, custom: customTex }, () => {
+                // not drawn yet: the squares of this chunk as pattern-filled paths
+                const inside = Object.fromEntries(c.entries.filter(([k]) => { const [cc, rr] = k.split(",").map(Number); return cc * CELL >= x && cc * CELL < x + S && rr * CELL >= y && rr * CELL < y + S; }));
+                return floorSvg(inside);
+            });
+        }).join("");
+    };
     // grid maps: terrain and squares fill the whole visible canvas (the border marks the saved area)
     const ext = { x: Math.floor(v.x / CELL) * CELL - CELL, y: Math.floor(v.y / CELL) * CELL - CELL, w: Math.ceil(size.w / v.z / CELL + 3) * CELL, h: Math.ceil(size.h / v.z / CELL + 3) * CELL };
 
@@ -1276,11 +1411,12 @@ function Editor({ data }) {
                     onDragOver=${(e) => e.preventDefault()} onDrop=${onDrop}>
                     <defs dangerouslySetInnerHTML=${{ __html: patterns }} />
                     <rect x=${-1e5} y=${-1e5} width=${2e5} height=${2e5} class="map-outside" />
-                    ${grid ? html`<rect x=${ext.x} y=${ext.y} width=${ext.w} height=${ext.h} fill=${`url(#f-${TERRAINS[doc.terrain]?.floor ?? "void"})`} pointer-events="none" />`
+                    ${useChunks ? html`<g pointer-events="none" dangerouslySetInnerHTML=${{ __html: grid ? terrainChunks() : `<clipPath id="map-area"><rect width="${doc.width}" height="${doc.height}"/></clipPath><g clip-path="url(#map-area)">${terrainChunks()}</g>` }} />`
+                        : grid ? html`<rect x=${ext.x} y=${ext.y} width=${ext.w} height=${ext.h} fill=${`url(#f-${TERRAINS[doc.terrain]?.floor ?? "void"})`} pointer-events="none" />`
                         : html`<g pointer-events="none" dangerouslySetInnerHTML=${{ __html: backgroundSvg(doc) }} />`}
                     ${layerViews.filter((x) => x.shown).map((x, i, all) => html`<g key=${x.layer.id} class=${x.active ? "layer-active" : "layer-below"} opacity=${x.faded ? 0.35 : 1}
                         pointer-events=${x.active && !x.layer.locked ? "auto" : "none"}>
-                        <g pointer-events="none" dangerouslySetInnerHTML=${{ __html: markup(x.layer).floor }} />
+                        <g pointer-events="none" dangerouslySetInnerHTML=${{ __html: useChunks ? floorChunks(x.layer) : markup(x.layer).floor }} />
                         ${i === all.length - 1 && (grid ? doc.showGrid && html`<rect x=${ext.x} y=${ext.y} width=${ext.w} height=${ext.h} fill="url(#grid-lines-ed)" pointer-events="none" />`
                             : html`<g pointer-events="none" dangerouslySetInnerHTML=${{ __html: gridSvg(doc) }} />`)}
                         <g dangerouslySetInnerHTML=${{ __html: markup(x.layer).objects }} />

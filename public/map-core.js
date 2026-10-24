@@ -369,10 +369,11 @@ function continuousLayer(t) {
 }
 
 /** Defs for a texture: VARIANTS symbols and the repeating tile `f-<id>` that scatters them */
+const variantCount = (t) => ((t.vary ?? 0) === 0 && !(t.details ?? []).length && (t.age ?? 0) === 0 ? 1 : VARIANTS);
 export function texturePattern(id, custom = {}) {
     const t = resolveTexture(id, custom) ?? { id, ...TEXTURES.void };
     const layer = continuousLayer(t);
-    const n = (t.vary ?? 0) === 0 && !(t.details ?? []).length && (t.age ?? 0) === 0 ? 1 : VARIANTS;
+    const n = variantCount(t);
     let s = "";
     // bases first, then details for every square: details may spill over a square's edge onto its neighbours, hiding the seams
     for (let k = 0; k < n; k++) {
@@ -393,6 +394,92 @@ export function texturePattern(id, custom = {}) {
     if (layer) bases = `<rect width="${TILE * CELL}" height="${TILE * CELL}" fill="url(#fl-${id})"/>`;
     return `${s}${layer ?? ""}<pattern id="f-${id}" width="${TILE * CELL}" height="${TILE * CELL}" patternUnits="userSpaceOnUse">${bases}${overs}</pattern>`;
 }
+// ------------------------------------------------------------------ floors square by square
+// The repeating tile (f-<id>) shows a pattern from far away. Painted floors and terrain are instead drawn square by
+// square: each square's base and variation are picked from its own position, so nothing repeats, and soft light and
+// dark patches placed by position (macroSvg) break up large areas. Uses the same symbols as the tile.
+const hash3 = (a, b, c) => { let h = Math.imul(a | 0, 73856093) ^ Math.imul(b | 0, 19349663) ^ Math.imul(c | 0, 83492791); h = Math.imul(h ^ (h >>> 13), 1274126177); return (h ^ (h >>> 16)) >>> 0; };
+const texInfo = (f, custom, cache) => {
+    let t = cache.get(f);
+    if (!t) { const tx = resolveTexture(f, custom); t = { n: tx ? variantCount(tx) : 1, cont: !!(tx && TILE_STRUCTURES[tx.structure]), h: hashStr(f) }; cache.set(f, t); }
+    return t;
+};
+/** cells: [[c, r, floorId]] → markup (bases of every square, then their details, which may spill over edges; clipId keeps them inside) */
+export function floorCellsSvg(cells, custom = {}, size = CELL, clipId = null) {
+    const info = new Map();
+    let bases = "", overs = "";
+    for (const [c, r, f] of cells) {
+        const t = texInfo(f, custom, info), k = hash3(c, r, t.h) % t.n, x = c * size, y = r * size;
+        const ref = (pre) => `href="#${pre}-${f}-${k}" xlink:href="#${pre}-${f}-${k}" x="${x}" y="${y}" width="${size}" height="${size}"`;
+        bases += t.cont ? `<rect x="${x}" y="${y}" width="${size}" height="${size}" fill="url(#fl-${f})"/>` : `<use ${ref("fb")}/>`;
+        overs += `<use ${ref("fv")}/>`;
+    }
+    return bases + (clipId ? `<g clip-path="url(#${clipId})">${overs}</g>` : overs);
+}
+export const MACRO_DEFS = `<radialGradient id="mgl"><stop offset="0" stop-color="#fff" stop-opacity=".055"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient><radialGradient id="mgd"><stop offset="0" stop-color="#000" stop-opacity=".06"/><stop offset="1" stop-color="#000" stop-opacity="0"/></radialGradient>`;
+const MACRO = CELL * 4;
+/** Soft light and dark patches over {x, y, w, h}, placed by position (seamless between neighbouring areas) */
+/** The patches over an area: [{cx, cy, rx, ry, rot, dark}] (the same everywhere they are drawn) */
+export function macroBlobs(x, y, w, h) {
+    const out = [];
+    for (let gy = Math.floor(y / MACRO) - 1; gy <= Math.ceil((y + h) / MACRO); gy++) for (let gx = Math.floor(x / MACRO) - 1; gx <= Math.ceil((x + w) / MACRO); gx++) {
+        const r = rng(hash3(gx, gy, 9173) || 1);
+        for (let i = 0, m = 1 + Math.floor(r() * 2); i < m; i++) {
+            const cx = (gx + r()) * MACRO, cy = (gy + r()) * MACRO, rx = MACRO * (0.6 + r() * 0.9), ry = MACRO * (0.5 + r() * 0.8);
+            out.push({ cx, cy, rx, ry, rot: Math.round(r() * 180), dark: r() < 0.5 });
+        }
+    }
+    return out;
+}
+export function macroSvg(x, y, w, h) {
+    return macroBlobs(x, y, w, h).map((b) => `<ellipse cx="${n1(b.cx)}" cy="${n1(b.cy)}" rx="${n1(b.rx)}" ry="${n1(b.ry)}" transform="rotate(${b.rot} ${n1(b.cx)} ${n1(b.cy)})" fill="url(#mg${b.dark ? "d" : "l"})"/>`).join("");
+}
+export const MACRO_ALPHA = { light: 0.055, dark: 0.06 };
+
+// ---- for drawing floors on a canvas (the editor): sprite sheets of a texture's variations
+/** which variation a square shows: (c, r, floorId) -> {k, n, cont} */
+export function squarePicker(custom = {}) {
+    const info = new Map();
+    return (c, r, f) => { const t = texInfo(f, custom, info); return { k: hash3(c, r, t.h) % t.n, n: t.n, cont: t.cont }; };
+}
+/** period of a texture's continuous floor layer in map px (planks, cobbles…), or 0 */
+export function continuousPeriod(id, custom = {}) { const t = resolveTexture(id, custom); return t && TILE_STRUCTURES[t.structure] ? TILE_STRUCTURES[t.structure].period * CELL : 0; }
+export const SHEET = { cols: 8, rows: 4, overPad: 32 };
+/**
+ * A texture's variations as one sheet (map units, drawn at `scale`): bases in a cols × rows grid of 64 squares at the top
+ * (y 0..256), details below (y 256..) in a grid of 128 squares, each detail drawn 32 in from its box so spill fits.
+ */
+export function spriteSheetSvg(id, custom = {}, scale = 1) {
+    const W = SHEET.cols * 128, H = SHEET.rows * 64 + SHEET.rows * 128;
+    let uses = "";
+    for (let k = 0; k < SHEET.cols * SHEET.rows; k++) {
+        const cx = k % SHEET.cols, cy = Math.floor(k / SHEET.cols);
+        const ref = (pre, x, y) => `<use href="#${pre}-${id}-${k}" xlink:href="#${pre}-${id}-${k}" x="${x}" y="${y}" width="64" height="64"/>`;
+        uses += ref("fb", cx * 64, cy * 64) + ref("fv", cx * 128 + SHEET.overPad, SHEET.rows * 64 + cy * 128 + SHEET.overPad);
+    }
+    return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${W} ${H}" width="${Math.ceil(W * scale)}" height="${Math.ceil(H * scale)}"><defs>${texturePatternCached(id, custom)}</defs>${uses}</svg>`;
+}
+/** One layer of a texture as a stand-alone SVG: "fl" (continuous floor, period × period) or "f" (the repeating tile) */
+export function textureLayerSvg(id, custom = {}, which = "f", scale = 1) {
+    const P = which === "fl" ? continuousPeriod(id, custom) : TILE_PX;
+    return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${P} ${P}" width="${Math.ceil(P * scale)}" height="${Math.ceil(P * scale)}"><defs>${texturePatternCached(id, custom)}</defs><rect width="${P}" height="${P}" fill="url(#${which}-${id})"/></svg>`;
+}
+/** Painted squares (a layer's `floor`, or a list) with their patches, clipped to the squares */
+export function paintedFloorSvg(entries, custom = {}, clipId = "pf") {
+    if (!entries.length) return "";
+    const cells = entries.map(([k, f]) => { const [c, r] = k.split(",").map(Number); return [c, r, f]; });
+    const xs = cells.map((q) => q[0]), ys = cells.map((q) => q[1]);
+    const box = { x: Math.min(...xs) * CELL, y: Math.min(...ys) * CELL, w: (Math.max(...xs) - Math.min(...xs) + 1) * CELL, h: (Math.max(...ys) - Math.min(...ys) + 1) * CELL };
+    const clip = cells.map(([c, r]) => `M${c * CELL} ${r * CELL}h${CELL}v${CELL}h-${CELL}z`).join("");
+    return `<clipPath id="${clipId}"><path d="${clip}"/></clipPath>${floorCellsSvg(cells, custom, CELL, clipId)}<g clip-path="url(#${clipId})">${macroSvg(box.x, box.y, box.w, box.h)}</g>`;
+}
+/** The terrain of a grid map (or backdrop of a freeform map) square by square over {x, y, w, h}, with patches */
+export function terrainCellsSvg(floorId, x, y, w, h, custom = {}) {
+    const cells = [];
+    for (let r = Math.floor(y / CELL); r < Math.ceil((y + h) / CELL); r++) for (let c = Math.floor(x / CELL); c < Math.ceil((x + w) / CELL); c++) cells.push([c, r, floorId]);
+    return floorCellsSvg(cells, custom) + macroSvg(x, y, w, h);
+}
+
 const patternCache = new Map();
 /** texturePattern, cached by the texture's definition */
 export function texturePatternCached(id, custom = {}) {
@@ -634,12 +721,12 @@ export function ribbonSvg(o, ctx) {
 }
 
 /** A ribbon's markup along geometry g (the whole ribbon, or one piece of it) */
-function ribbonBody(o, g) {
+function ribbonBody(o, g, { noFloor = false } = {}) {
     const preset = RIBBONS[o.style] ?? RIBBONS.strip;
     const B = o.box ?? CELL, W = (o.cols ?? preset.cols ?? 2) * B;
     const floor = o.floor === undefined ? preset.floor : o.floor;
     let defs = "", body = "";
-    if (floor) {
+    if (floor && !noFloor) {
         const used = new Set();
         const k = B / CELL, ks = k === 1 ? "" : `-s${Math.round(k * 1000)}`;
         for (let x = 0; x < g.L; x += B) {
@@ -668,14 +755,14 @@ function ribbonBody(o, g) {
  * A ribbon cut into pieces of 6 boxes along its length, each a stand-alone SVG over its own small box, so the editor
  * can turn every piece into a bitmap. Returns [{x, y, w, h, svg}] or [] for a ribbon too short to draw.
  */
-export function ribbonPieces(o, custom = {}, scale = 2) {
+export function ribbonPieces(o, custom = {}, scale = 2, { noFloor = false } = {}) {
     const preset = RIBBONS[o.style] ?? RIBBONS.strip;
     const B = o.box ?? CELL, W = (o.cols ?? preset.cols ?? 2) * B;
     if (!o.pts || o.pts.length < 2) return [];
     const g = curveGeom(o.pts, o.smooth ?? true);
     if (g.L < 1) return [];
     const floor = o.floor === undefined ? preset.floor : o.floor;
-    const defs = floor ? texturesDefs([floor], custom) : "";
+    const defs = floor && !noFloor ? texturesDefs([floor], custom) : "";
     const len = B * 6, pad = 18;
     const out = [];
     for (let s0 = 0; s0 < g.L; s0 += len) {
@@ -686,7 +773,10 @@ export function ribbonPieces(o, custom = {}, scale = 2) {
         const xs = edge.map((p) => p[0]), ys = edge.map((p) => p[1]);
         const x = Math.floor(Math.min(...xs) - pad), y = Math.floor(Math.min(...ys) - pad);
         const w = Math.ceil(Math.max(...xs) + pad - x), h = Math.ceil(Math.max(...ys) + pad - y);
-        out.push({ x, y, w, h, svg: `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="${x} ${y} ${w} ${h}" width="${Math.ceil(w * scale)}" height="${Math.ceil(h * scale)}"><defs>${defs}</defs>${ribbonBody(o, sub)}</svg>` });
+        // floor slices of this piece (for painting the floor elsewhere): polygon + texture angle
+        const slices = [];
+        if (floor) for (let a = s0; a < s1; a += B) { const b = Math.min(s1, a + B + 0.8); slices.push({ pts: [...g.offsetPts(-W / 2, a, b), ...g.offsetPts(W / 2, a, b).reverse()], angle: angleBucket(g.at((a + b) / 2).a) }); }
+        out.push({ x, y, w, h, floor, k: B / CELL, slices, svg: `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="${x} ${y} ${w} ${h}" width="${Math.ceil(w * scale)}" height="${Math.ceil(h * scale)}"><defs>${defs}</defs>${ribbonBody(o, sub, { noFloor })}</svg>` });
     }
     return out;
 }
@@ -792,11 +882,12 @@ export function roomSvg(o, ctx, part = "all") {
     const tf = `translate(${n1(o.x)} ${n1(o.y)})${o.rot ? ` rotate(${n1(o.rot)} ${n1(cx)} ${n1(cy)})` : ""}`;
     // contents are drawn in a second pass (after every room's floor), so a neighbouring room never covers them
     if (part === "contents") return (o.children ?? []).length ? `<g transform="${tf}">${floorFirst(o.children).map((c) => objectSvg(c, ctx)).join("")}</g>` : "";
-    const base = roomBase(o);
-    // the editor draws a room's floor, painted squares, grid and walls from one bitmap once it is ready
-    const img = ctx.roomImage?.(o, base);
-    let s = img ?? `${base.defs ? `<defs>${base.defs}</defs>` : ""}${base.body}`;
-    if (ctx.edit) s += `<path d="${base.outline}" fill="transparent" stroke="none" pointer-events="all"/>`;
+    // the editor draws a room's floor, painted squares, grid and walls from bitmaps once they are ready
+    const img = ctx.roomImage?.(o);
+    let s, outline;
+    if (img) { s = img; outline = (o.shapes ?? []).some((sh) => sh.op !== "open") ? roomOutline(o).d : `M0 0H${n1(o.w)}V${n1(o.h)}H0Z`; }
+    else { const base = roomBase(o); s = `${base.defs ? `<defs>${base.defs}</defs>` : ""}${base.body}`; outline = base.outline; }
+    if (ctx.edit) s += `<path d="${outline}" fill="transparent" stroke="none" pointer-events="all"/>`;
     if (part === "all") s += floorFirst(o.children ?? []).map((c) => objectSvg(c, ctx)).join("");
     return `<g${ctx.edit ? ` data-id="${esc(o.id)}"` : ""} transform="${tf}">${s}</g>`;
 }
@@ -984,6 +1075,7 @@ export function rehome(o, from, to) {
 
 /** A layer in two parts: painted squares, then objects (floor-level ones first). The map grid goes between them on the top layer. */
 export function layerParts(layer, ctx, region) {
+    // ctx.cellFloors: painted squares drawn one by one (the saved SVG); otherwise as pattern-filled paths
     const objs = region ? (layer.objects ?? []).filter((o) => visibleIn(o, region)) : layer.objects ?? [];
     const floor = region ? Object.fromEntries(Object.entries(layer.floor ?? {}).filter(([k]) => {
         const [c, r] = k.split(",").map(Number);
@@ -996,7 +1088,8 @@ export function layerParts(layer, ctx, region) {
         + of("ribbon").map((o) => objectSvg(o, ctx)).join("")
         + rooms.map((o) => roomSvg(o, ctx, "base")).join("") + rooms.map((o) => roomSvg(o, ctx, "contents")).join("")
         + objs.filter((o) => !isFloorLevel(o)).map((o) => objectSvg(o, ctx)).join("");
-    return { floor: floorSvg(floor), objects: markup };
+    const entries = Object.entries(floor ?? {});
+    return { floor: ctx.cellFloors && entries.length <= 20000 ? paintedFloorSvg(entries, ctx.custom, `pf-${esc(layer.id)}`) : floorSvg(floor), objects: markup };
 }
 /** Does a selection box {x, y, w, h} touch the object itself (lines, tracks and areas by their shape, not their bounds)? */
 export function touchesBox(o, box) {
@@ -1061,11 +1154,12 @@ export const unitsPerPx = (doc) => (doc.units?.amount ?? 1) / (doc.units?.per ??
 export function renderMapSvg(doc, ctx) {
     const json = JSON.stringify(doc).replace(/]]>/g, "]]]]><![CDATA[>");
     const shown = viewLayers(doc).filter((x) => x.shown);
-    const layers = shown.map((x, i) => `<g data-layer="${esc(x.layer.name)}"${x.faded ? ' opacity="0.35"' : ""}>${layerSvg(x.layer, ctx, i === shown.length - 1 ? gridSvg(doc) : "")}</g>`).join("");
+    const cx = { ...ctx, cellFloors: true, custom: doc.textures };
+    const layers = shown.map((x, i) => `<g data-layer="${esc(x.layer.name)}"${x.faded ? ' opacity="0.35"' : ""}>${layerSvg(x.layer, cx, i === shown.length - 1 ? gridSvg(doc) : "")}</g>`).join("");
     return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${doc.width} ${doc.height}" width="${doc.width}" height="${doc.height}">
 <metadata id="books-meta-map"><![CDATA[${json}]]></metadata>
-<defs>${texturesDefs(usedFloors(doc), doc.textures)}${ctx.defs ?? ""}</defs>
-${backgroundSvg(doc)}
+<defs>${texturesDefs(usedFloors(doc), doc.textures)}${MACRO_DEFS}${ctx.defs ?? ""}</defs>
+${(doc.width / CELL) * (doc.height / CELL) <= 20000 ? terrainCellsSvg(doc.kind === "grid" ? TERRAINS[doc.terrain]?.floor ?? "void" : doc.backdrop ?? "parchment", 0, 0, doc.width, doc.height, doc.textures) : backgroundSvg(doc)}
 ${layers || gridSvg(doc)}
 </svg>
 `;

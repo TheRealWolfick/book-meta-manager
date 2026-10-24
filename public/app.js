@@ -251,8 +251,8 @@ function useFlip() {
 
 // ------------------------------------------------------------------ index context (data store listing)
 
-function useIndex() {
-    const { data } = useApi("/api/index");
+function useIndex(enabled = true) {
+    const { data } = useApi(enabled ? "/api/index" : null);
     return useMemo(() => {
         if (!data) return null;
         const byName = new Map();
@@ -379,7 +379,8 @@ function Sidebar({ index, novelFolder }) {
     const toggle = (id) => { const c = { ...closed, [id]: !closed[id] }; setClosed(c); store.set("sidebarClosed", c); };
     const [theme, setThemeState] = useState(store.get("theme", "system"));
     const setTheme = (m) => { setThemeState(m); store.set("theme", m); applyTheme(m); };
-    if (!index) return html`<nav class="sidebar"><div class="brand">Books Meta Viewer</div></nav>`;
+    if (!index) return html`<nav class="sidebar"><div class="brand">Books Meta Viewer</div>
+        <div class="side-section"><a class=${active("#/settings")} href="#/settings"><span>Settings</span></a></div></nav>`;
     const cols = Object.keys(index.schema.collections);
     const main = cols.filter((c) => !c.startsWith("Taxonomy/"));
     const tax = cols.filter((c) => c.startsWith("Taxonomy/"));
@@ -391,7 +392,7 @@ function Sidebar({ index, novelFolder }) {
         <a class=${`side-pill ${route0() === "world" || route0() === "map" ? "active" : ""}`} href="#/world">World builder<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18" /></svg></a>
         ${section("datastore", "Data store", main.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${c}</span><span class="count">${index.counts[c] ?? 0}</span></a>`))}
         ${section("taxonomy", "Taxonomy", tax.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${collectionLabel(c)}</span><span class="count">${index.counts[c] ?? 0}</span></a>`))}
-        ${section("tools", "Tools", html`<a class=${active("#/qa")} href="#/qa"><span>Quality checks</span></a>`)}
+        ${section("tools", "Tools", html`<a class=${active("#/qa")} href="#/qa"><span>Quality checks</span></a><a class=${active("#/settings")} href="#/settings"><span>Settings</span></a>`)}
         <div class="theme-switch" role="group" aria-label="Theme">${THEMES.map(([m, label]) => html`<button class=${theme === m ? "on" : ""} aria-pressed=${theme === m} onClick=${() => setTheme(m)}>${label}</button>`)}</div>
     </nav>`;
 }
@@ -2058,11 +2059,68 @@ function QAView() {
     </div>`;
 }
 
+// ------------------------------------------------------------------ settings
+
+/** The vault folder: shown, typed or picked from a folder browser; switching reloads the app on the new vault */
+function SettingsView({ settings }) {
+    const [path, setPath] = useState(settings?.vault ?? "");
+    const [browse, setBrowse] = useState(settings?.vault ?? "");
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const { data: dir, error: dirError } = useApi(`/api/settings/folders?${qs({ path: browse })}`);
+    useEffect(() => { if (settings?.vault && !path) { setPath(settings.vault); setBrowse(settings.vault); } }, [settings?.vault]);
+    if (!settings) return html`<${Loading} />`;
+    const use = async (folder) => {
+        setBusy(true); setError(null);
+        try {
+            await api.send("POST", "/api/settings", { vault: folder });
+            location.hash = "#/";
+            location.reload();
+        } catch (e) { setError(e.message); setBusy(false); }
+    };
+    const SOURCES = { settings: "chosen here", BOOKS_VAULT: "from the service settings (BOOKS_VAULT)", "--vault": "from the --vault option" };
+    return html`<div class="settings">
+        <h1>Settings</h1>
+        <div class="panel">
+            <h3>Vault folder</h3>
+            ${settings.vault
+                ? html`<p><code>${settings.vault}</code></p>
+                    <p class="muted">${settings.notes} notes · ${SOURCES[settings.source] ?? settings.source}${settings.looksLikeVault ? "" : " · no .obsidian folder here, so Obsidian hasn't opened it as a vault"}</p>
+                    ${!settings.hasSchema && html`<p class="muted">This vault has no <code>90. Templater/Data Store Schema.md</code> yet. Run <code>npm run seed -- "${settings.vault}"</code> to add the schema, ledger types and a basic taxonomy.</p>`}
+                    ${settings.overridden && html`<p class="muted">The app was started with <code>--vault</code>, which wins over a folder chosen here when it restarts.</p>`}`
+                : html`<p>${settings.problem ?? "No vault folder chosen yet."} Choose your Obsidian vault below.</p>`}
+            <div class="row settings-path">
+                <input type="text" value=${path} placeholder="/path/to/Obsidian/vault" aria-label="Vault folder" onInput=${(e) => setPath(e.target.value)} onKeyDown=${(e) => e.key === "Enter" && path.trim() && use(path.trim())} />
+                <button class="primary" disabled=${busy || !path.trim() || path.trim() === settings.vault} onClick=${() => use(path.trim())}>${busy ? "Opening…" : "Use this folder"}</button>
+            </div>
+            ${error && html`<p class="error">${error}</p>`}
+            <p class="muted">Saved in <code>${settings.settingsFile}</code>, so it is kept when the app restarts.</p>
+        </div>
+        <div class="panel folder-picker">
+            <h3>Browse</h3>
+            ${dirError && html`<p class="error">${dirError}</p>`}
+            ${dir && html`<div class="row">
+                    <button class="small" disabled=${!dir.parent} onClick=${() => setBrowse(dir.parent)}>↑ Up</button>
+                    <button class="small" onClick=${() => setBrowse(dir.home)}>Home</button>
+                    <code class="picker-here">${dir.path}</code>
+                    <button class="small" onClick=${() => setPath(dir.path)}>Choose this folder</button>
+                </div>
+                <ul class="folders">
+                    ${dir.folders.map((f) => html`<li><button class="link" onClick=${() => setBrowse(f.path)}>${f.name}</button>${f.vault && html` <span class="badge ok">vault</span>`}
+                        ${f.vault && html` <button class="small" onClick=${() => setPath(f.path)}>Choose</button>`}</li>`)}
+                    ${!dir.folders.length && html`<li class="muted">No folders here.</li>`}
+                </ul>`}
+        </div>
+    </div>`;
+}
+
 // ------------------------------------------------------------------ app
 
 function App() {
     const route = useRoute();
-    const index = useIndex();
+    const { data: settings } = useApi("/api/settings");
+    const noVault = settings && !settings.vault;
+    const index = useIndex(!noVault);
     const [novelFilter, setNovelFilter] = useState(store.get("novelFilter", ""));
     const setNF = (v) => { setNovelFilter(v); store.set("novelFilter", v); };
     const [a, b] = route.args;
@@ -2087,10 +2145,13 @@ function App() {
         case "entry": view = html`<${EntryEditor} key=${location.hash} index=${index} folder=${a} params=${route.params} />`; break;
         case "callouts": view = html`<${CalloutSettings} key=${a} folder=${a} />`; break;
         case "qa": view = html`<${QAView} />`; break;
+        case "settings": view = html`<${SettingsView} settings=${settings} />`; break;
         case "world": view = html`<${WorldView} key=${a ?? ""} index=${index} world=${a ?? null} params=${route.params} />`; break;
         case "map": view = html`<${MapEditor} key=${a} index=${index} location=${a} />`; break;
         default: view = html`<${Home} index=${index} />`;
     }
+    // no vault folder yet: the Settings page is all there is
+    if (noVault) view = html`<${SettingsView} settings=${settings} />`;
     return html`<div class="layout">
         <${Sidebar} index=${index} novelFolder=${novelFolder} />
         <main class="main">
