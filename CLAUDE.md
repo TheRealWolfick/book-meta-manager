@@ -6,7 +6,7 @@ The user writes several novels in one vault and uses Templater, Dataview and Obs
 
 ## Vault
 
-Default path `~/Documents/Obsidian/books` (override with `--vault` or `BOOKS_VAULT`). It is a git repo backed up by obsidian-git. The app never touches `.obsidian/`, `.git/` or `.trash/`.
+Default path `~/Documents/Obsidian/books` (override with `--vault` or `BOOKS_VAULT`). It is a git repo backed up by obsidian-git. The app never touches `.obsidian/` or `.git/`; `.trash/` only receives deleted notes.
 
 ```
 1. <Novel>/ … 19. <Novel>/   novels: "<number>. <Name>" (number < 20)
@@ -19,6 +19,8 @@ Default path `~/Documents/Obsidian/books` (override with `--vault` or `BOOKS_VAU
   Supporting Docs/, *.base
 80. Global Data Store/ shared data (flat collection folders, see below)
   _Attachments/<Collection>/   uploaded images
+  _Attachments/Maps/           location maps `<Location> (Map).svg` (map builder, see World builder)
+  _Attachments/Map Stamps/<set>/  images pasted into the map builder (own stamps)
 90. Templater/
   Data Store Schema.md fields per collection + character sheet fields (JSON block). Single source of truth.
   Ledger Types.md      shared ledger type definitions and callout templates (frontmatter)
@@ -82,6 +84,33 @@ Field specs are in the Data Store Schema under `plans` (defaults in `lib/plans.j
 - `Plots.md` (callout list) is the legacy plot list; the `Plots/` notes replace it and Templater `createNovel` no longer creates it.
 - `scripts/migrate-plans.js` (run 2026-10-21 on the real vault, idempotent; `npm test` runs it on the copy) did the restructure: `arc-name` -> `number`, file renames, `plot` filled from bodies, Plan.base views, schema `plans` section.
 
+## World builder
+
+Sidebar pill "World builder" (`#/world/<world path>`, `-` = locations without a world). Tabs: Outline, Atlas, Maps. Code: `lib/worlds.js` (server), `public/world.js` (page), `public/map-editor.js` (map editor), `public/map-core.js` (shared with the server).
+
+- **Hierarchy** is the Locations `parent` link (plus `world`), nothing else. Siblings sort by scale rank (Taxonomy/Location Scales `class`), then title; there is no manual order field.
+- **Outline**: tree with inline add (scale defaults one step below the parent), drag and drop (top/bottom quarter of a row = next to it, middle = inside; a location can't go into itself or below itself), Move to… dialog (search, scale warning, other world's top level), Undo toast. A move patches only the moved note's `parent` (and `world` on the whole subtree when the world changes). A parent whose scale is not larger asks first.
+- **Atlas**: nested boxes sized by locations inside, coloured by scale group, click to select, double-click to zoom.
+- **Maps** (`#/map/<location path>`): one map per location, saved as a self-contained SVG `_Attachments/Maps/<Location> (Map).svg` (stamps embedded as data-URI symbols, so Obsidian's `![[…svg]]` shows it). The editable document is JSON in `<metadata id="books-meta-map">`; the location gets `map: "[[<file>]]"`. Pins for sub-locations are objects in that map (`location: "[[X]]"`), not fields on the sub-location.
+- Map document (`map-core.js newMap`): `kind` freeform | grid (1 square = `CELL` 64 px), `width/height`, `terrain` (grid default floor for every unpainted square, `TERRAINS`) or `backdrop` (freeform), `units {amount, unit, per}`, `layers [{id, name, hidden, locked, floor {"c,r": floorId}, objects}]`, `active`, `view` current | faded | solid (layers below the active one; layers above are hidden; the SVG is saved as shown). Objects: `stamp {src, x, y, w, h, rot, flip, opacity}`, `path {style, pts, smooth, closed, scale}`, `area {fill, style, pts}`, `text {style, text, x, y, size, color, rot}`, `pin {location, x, y}`, `ribbon {style, pts, cols, box, grid, floor, off, extra}`, `room {x, y, w, h, rot, box, floor, wall, grid, cells, children, shapes}`.
+- Draw order on a layer: painted squares, then (top shown layer only) the map grid, then floor-level objects (areas, ribbons, room floors), then the contents of every room (second pass, so a door on the seam of joined rooms is never covered by the neighbour), then everything else. So ribbons and rooms cover the map grid and stamps sit on top of them.
+- **Ribbons** (`RIBBONS` presets of a base floor + `RIBBON_PARTS`: sleepers, rails, beam, pylons, curbs, ruts, banks, railings, rollers, pipes, poles…): a curved strip `cols` boxes wide with boxes of `box` px; its floor is drawn in slices with the pattern rotated to the curve (5° buckets, `<pattern href>` onto `#f-<floor>`) and its own grid bends with it. Double-click a line/strip/area to add a point, double-click a point to remove it.
+- **Rooms** are objects with their own grid size, floor (+ painted `cells` in room boxes), walls and `children` in room coordinates (`toRoom`/`fromRoom`/`rehome` in map-core). New things land in the room under them; moving something across a room edge re-homes it (`regroup`). Rooms rotate only with snapping off; items rotate in 10° steps (Shift: free).
+- **Room shapes**: `shapes` is an ordered list of `{op: add|sub, shape: rect {x,y,w,h} | circle {cx,cy,r} | poly {pts}}` and openings `{op: open, cx, cy, len, thick, rot}`, all in room coordinates. The floor is masked to the area (rectangle + adds − cuts, in order, `roomInside`); walls follow its outline, traced with marching squares and simplified (`roomOutline`, cached); openings mask gaps in the walls. Tools: U add/cut (box, circle, polygon, in the room's own grid and angle; targets the selected room or the room under the pointer), N opening/door/double door/window on the nearest wall (`nearestWall`), the stamp turned to the wall. Room `x, y, w, h` stay the base rectangle (rotation pivot, resize handle); `bounds` covers the whole area.
+- Textures scale to the box size of what they fill: rooms and ribbons with `box` ≠ 64 use `scaledPattern` (href onto `f-<id>` with `scale(box/64)`, plus the ribbon's rotation), so one texture square always fills one box. The floor brush previews in the room's frame and box size.
+- **Connection points**: stamps with `ports` ([u, v] in 0..1 of the stamp box; pipework, valves, plant) snap port to port when placed or dragged within ~12 screen px of another stamp's port (nearest wins; Alt: no snapping). Ports are copied from the manifest onto the placed stamp.
+- Rooms can switch off joining on drag in the Map panel (`doc.autoJoin === false`); edge snapping still applies.
+- **Joined rooms**: rooms with the same `group` id stay separate objects but move (drag, arrow keys) and turn (about the turned room's centre) together. Dragging a room pulls it onto nearby rooms' edges (edge to edge and flush with parallel edges, when they face the same way in 90° steps; `edgeSnap`); letting go while touching joins them (`joinTouching`, toast with Undo). Ctrl+G joins the selected rooms, Ctrl+Shift+G separates; a group left with one room dissolves. Alt while dragging: no snapping, no joining.
+- Finished ribbons are drawn in the editor from bitmaps of 6-box pieces (`ribbonPieces`, `rasterRibbon`); a selected ribbon is vector while you edit it.
+- Rooms are drawn in the editor from one bitmap of their base (floor, painted squares, grid, walls: `roomBase`/`roomBaseSvg`, `rasterRoom`, at most 4096 px). The key (`roomLookKey`) leaves out position and angle, so moving or turning a room reuses it; the things inside stay separate objects. While painting, reshaping or resizing a room it is drawn live and re-baked on release. Bitmap caches drop their oldest entries (and revoke the URLs).
+- Editor keys: WASD pan (Shift faster); tools V select, H pan, I stamp, G scatter, L line, C ribbon, O area, F floor, X erase floor, R room, U room add/cut, N opening/door, T text, P pin, M measure, E erase. Right-click with the stamp or scatter tool switches to Select. With the stamp tool, Q / E rotate the stamp in hand (10°, Shift 90°; `opt.handRot`), shown in the preview and used when placing. Snap on/off button in the toolbar (grid maps), Alt overrides once.
+- Editor canvas of a grid map: terrain and squares fill the whole view; a two-tone border marks `width × height` (the saved area). Painting and placing work outside it, but the SVG is cropped to the border.
+- **Textures** (`map-core.js` `TEXTURES`, used for painted squares, terrains, room floors, area fills and ribbons): a plain base (colour + clean `STRUCTURES`: planks, cobble, tiles…) plus generated `DETAILS` (blades, stains, cracks, moss, rust…, counts per square, fractions = chance). Each texture has `VARIANTS` (24) seeded variants of one square, drawn in two passes (bases, then details that may spill over the edge) inside a 12×12-square tile `f-<id>` that scatters them, so every square shows the base + one variant without visible repeats or seams. Natural ground varies through soft blotches, structured floors per square. `age` (more wear detail, greyer, darker), `vary`, `tint`/`tintAmount`, `hue`, `light`, `density`, `add` (extra details) modify a texture.
+- **Editor performance**: each texture's tile is drawn once into a canvas (`rasterTexture`, 2× scale) and the editor's patterns paint that bitmap (plain colour while drawing; vector defs where there is no canvas, e.g. jsdom). Saved SVGs keep vector textures. Layers render only objects and painted squares inside the view plus half a screen each side (`layerParts(layer, ctx, region)`, `visibleIn`), in 512 px steps so panning rarely rebuilds markup.
+- **Derived textures** ("Aged planks") live in `90. Templater/Map Textures.md` frontmatter `textures: {id: {name, from, age, vary, tint, tintAmount, hue, light, density, details: [{kind, n, color, size, vary, on}]}}` (GET/POST /api/textures), made in the texture dialog (Textures panel → New from this / Edit): big live preview, look sliders, and one row per detail with its own amount, size, colour variation and colour. `details` replaces the base texture's detail list (it starts as a copy, `detailRows`); older definitions with `add: [kinds]` still work and become rows when edited. A saved map copies the definitions it uses into `doc.textures`, so it renders without the library. Only textures a map uses go into the editor and the SVG (a full set would be about 1.8 MB).
+- Styles live in `map-core.js`: `TEXTURES` (see above), `TERRAINS`, `PATH_STYLES` (stroke stacks; `snap` styles snap to grid corners, others to square centres), `TEXT_STYLES` (`gm` notes are not exported).
+- **Stamps**: `public/stamps/` (served at `/stamps/`), catalogue `manifest.json` built by `node scripts/build-stamps.js [--game-icons <dir>]`, which also draws the steampunk top-down set and the game-icons tokens/markers. Sources and licences in `public/stamps/CREDITS.md` (Azgaar FMG relief/burg icons MIT, Kenney Cartography + Medieval RTS CC0, game-icons.net CC BY 3.0, steampunk set drawn here). Groups have a `mode` (freeform, grid, both). The script also draws the mechanical plant set (`PLANT`, with ports) and pipework (`PIPE_STYLES` × `PIPE_PIECES` into `public/stamps/pipes/`). Doors are `door-swing` (1×2) and `double-door-swing` (2×2) with the swing inside the stamp and the wall line through the middle; the old `door`/`double-door` files stay for existing maps but are hidden from the library. Pasted or dropped images go to `_Attachments/Map Stamps/Pasted/` via POST /api/stamps.
+
 ## Stats
 
 Per-novel **stat templates** in `config.md` frontmatter `stat-templates: {<Name>: {description, default, callout, show-empty, panel, fields: [...]}}`. Field: `key` (frontmatter key on the sheet, default `stats/<label>`), `label`, `type` (number, text, longtext, list, boolean, choice, link, links, resource, computed), `section`, and per type `integer`/`min`/`max`, `options`, `collection` + `describe`, `max-field` (resource), `formula` (computed), `unit`, `source` (character frontmatter field that prefills the value). Rules, checks, formulas and the default panel layout are in `public/stats-core.js` (shared with the server); vault side in `lib/stats.js`.
@@ -143,6 +172,12 @@ lib/template.js      mustache subset + callout prefixing
 lib/render.js        markdown -> HTML (marked) with wikilinks, image embeds, callouts, inline fields, %% comments
 lib/stats.js         stat templates, holders, values at a chapter, checks, sheet sync hook, panels, creature stat notes
 public/stats-core.js field types, checks, text<->value, formulas, panel layout (served at /stats-core.js)
+lib/worlds.js        world builder: worlds, location trees, create/move locations, map read/save (SVG), own stamps
+public/map-core.js   map document model, floors/terrains/path/text styles, SVG rendering (served at /map-core.js)
+public/world.js      world builder page (outline, atlas, maps list)
+public/map-editor.js map editor (tools, layers, stamp library, inspector, pins, settings)
+public/stamps/       built-in map stamps + manifest.json + CREDITS.md
+scripts/build-stamps.js  builds public/stamps/manifest.json and the generated stamps
 lib/plans.js         volumes, chapter plans, plots: overview, create, saveChapterPlan, syncVolumes, describe(note)
 public/outline.js    plan outline parse/serialise (served at /outline.js, imported by the server too)
 public/              index.html (import map), app.js (all views, Preact + htm), style.css (light/dark), fonts/ (Newsreader)
@@ -156,13 +191,14 @@ Dependencies: `yaml`, `marked`, `preact`, `htm` (served from node_modules at `/v
 
 ```
 GET  /api/index                         data store notes (fm, no bodies), schema, counts, novels
-GET  /api/note?path=                    entry page: fm, html, resolved links, backlinks, images,
+GET  /api/note?path=                    entry page: fm, html, resolved links, backlinks, outlinks, images,
                                         blueprint tree, whereUsed, heldBy
 GET  /api/blueprint?item=&count=        build tree + bill for N units
 GET  /api/qa
 POST /api/render {markdown}
 POST /api/note {collection, name, fm, body}         create (unique name)
 PATCH /api/note {path, set, unset, body, baseMtime} edit any note (also novel config.md)
+DELETE /api/note?path=&baseMtime=                  move to .trash (not config/ledger/Templater notes)
 POST /api/images?path=&filename=  (raw body)        attach image
 GET  /api/novel?folder=                 config, ledger types, chapters, characters, ledgers, stores, setFields
 GET  /api/owner?novel=&owner=&at=&compare=&mode=    ledgers of an owner + computed state at a chapter
@@ -183,6 +219,15 @@ POST /api/stats/view {novel, owner, at, template}   same, with an unsaved templa
 GET  /api/stats/novel?novel=             templates, holders, configMtime
 POST /api/stats/templates {novel, templates:[...], renames:{old:new}, baseMtime}
 POST /api/stats/creature {novel, creature, template}
+GET  /api/worlds                         worlds with location counts
+GET  /api/world?world=                   world + all its locations (parent, scale rank, map), scales
+POST /api/world/location {world, parent, name, scale}
+POST /api/world/move {path, parent, world?, baseMtime}   parent null = top level
+GET  /api/map?location=                  map document (or null), file, mtime, sub-locations, parent
+POST /api/map {location, doc, baseMtime}  write the SVG (409 if changed meanwhile), link `map:`
+GET  /api/stamps                         own stamps in _Attachments/Map Stamps
+GET  /api/textures   POST /api/textures {textures, baseMtime}   derived map textures (Map Textures.md)
+POST /api/stamps?filename=&set=  (raw body)   add an own stamp
 GET  /api/events                         SSE {version, paths} on every vault change
 ```
 
@@ -190,16 +235,18 @@ Non-GET requests must send `x-requested-with: books-meta-viewer` (blocks cross-s
 
 ### Front end
 
-`public/app.js`: hash router (`#/c/<collection>`, `#/note/<path>`, `#/edit/<path>`, `#/new/<collection>`, `#/newchar/<novel>`, `#/novel/<folder>`, `#/owner/<folder>/<owner>`, `#/chapter/<folder>/<n>`, `#/entry/<folder>?owner&type&ledger&key&chapter`, `#/callouts/<folder>`, `#/qa`). `useApi(url)` refetches whenever the SSE version changes. Forms hold local state initialised once. `localStorage` holds only conveniences (view mode, novel filter, taxonomy toggle, group-by, column widths and hidden columns), wrapped in try/catch.
+`public/app.js`: hash router (`#/world/<world>`, `#/map/<location>`, `#/c/<collection>`, `#/note/<path>`, `#/edit/<path>`, `#/new/<collection>`, `#/newchar/<novel>`, `#/novel/<folder>`, `#/owner/<folder>/<owner>`, `#/chapter/<folder>/<n>`, `#/entry/<folder>?owner&type&ledger&key&chapter`, `#/callouts/<folder>`, `#/qa`). `useApi(url)` refetches whenever the SSE version changes. Forms hold local state initialised once. `localStorage` holds only conveniences (view mode, novel filter, taxonomy toggle, group-by, column widths and hidden columns), wrapped in try/catch.
 
 - Note pages are always editable (`FieldsEditor`): edits are kept as overrides of the fetched frontmatter, only changed keys are PATCHed on "Save changes" (Ctrl+S). `#/edit/<path>` is an alias of `#/note/<path>`; `NoteForm` only creates notes.
-- Side drawer: a click on a `#/note/` link inside any `[data-drawer]` element (collection tables and cards, the drawer itself) opens it in the right-hand drawer instead of navigating. `data-page` opts a link out; ctrl/cmd-click still navigates. The drawer keeps a back/forward stack; back on the first page, clicking the backdrop, Escape or any route change closes it. Unsaved edits ask before being discarded (`markDirty`/`confirmDiscard`, scoped "page" or "drawer").
+- Side drawer: a click on a `#/note/` link inside any `[data-drawer]` element (collection tables and cards, the drawer itself) opens it in the right-hand drawer instead of navigating. `data-page` opts a link out; ctrl/cmd-click still navigates. The drawer is 1280px wide (94vw max); notes in it use two columns (`.note-cols`). Left: `NoteSummary` (description as a lead, then the collection's key fields as a facts row and longer fields under subheadings; defaults in `SUMMARY` in app.js, overridable per collection with `summary: {facts, sections}` in the schema), held by/used in, blueprint, body, images and image drop. Right: frontmatter fields, "Linked from" and "Links to". Plan notes keep their fields on the left, since they are the plan. Ranked taxonomy notes (`ordered: true`) get a `ClassStrip` across both columns: every value of the facet in `class` order, each opening in the drawer. Below 1000px the columns stack with the fields first. The full note page keeps its one-column layout. The drawer never closes: clicking the backdrop, Escape, the » button or any route change collapses it to a tab on the right edge (click to reopen). It stays mounted while collapsed (`inert`), so unsaved drawer edits survive navigation. Instead of back/forward the head shows the five most recent drawer pages as boxes, newest first; opening a page (or clicking a box) moves it to the front. Switching pages with unsaved edits asks before discarding them (`markDirty`/`confirmDiscard`, scoped "page" or "drawer").
 - Collection view: facet values that would leave no rows are greyed out (counts ignore the facet's own selection, values within a facet are OR-ed). A "Group by" bar (a one-row table, a button above each column; fields without a column go in the last cell) splits the rows into one table per group (click again to ungroup); list values put a row in every matching group; ranked taxonomies sort by `class`. Group choice is stored per collection in localStorage.
 - `ColumnTables`: all group tables share one `<colgroup>` of widths (`table-layout: fixed`), measured from the first table's natural layout. Drag a header's right edge to resize (double-click resets), hold a header to collapse the column to a thin bordered strip (click or hold to restore). Resized widths (`colWidths:<collection>`) and hidden columns (`colHidden:<collection>`) are saved in localStorage; the last column fills the rest. One `.coltables` container scrolls all tables horizontally together.
-- Novel page tabs: Grand plan (volumes with their plots and chapter rows, "Plan chapter N"), Plots (cards grouped by grade, grade select saves `rating`), Characters & ledgers. Chapter links open `ChapterView` in the drawer: `ChapterPlan` (outline editor + Save changes, posts to /api/plan/chapter) above the ledger entries. The drawer stack holds hrefs (`#/note/…`, `#/chapter/…`).
+- Novel page tabs: Grand plan (volumes with their plots and chapter rows, "Plan chapter N"), Plots (cards grouped by grade, grade select saves `rating`), Characters & ledgers. Chapter links open `ChapterView` in the drawer: `ChapterPlan` (outline editor + Save changes, posts to /api/plan/chapter) above the ledger entries. The drawer's recent list holds hrefs (`#/note/…`, `#/chapter/…`).
 - `PlanEditor`: one auto-growing textarea per outline item, level = indent; Enter continues at the same level (on an empty sub item it outdents), Tab/Shift+Tab move the item and its sub events, Backspace at the start outdents or joins, Alt+↑/↓ moves, multi-line paste splits. Any frontmatter key `plan` uses it; `plot` uses a prose textarea.
 - Theme (Novel Accents): neutral light and dark palettes in `style.css` tokens; `<html data-theme="light|dark">` forces one, otherwise `prefers-color-scheme` decides (System / Light / Dark switch in the sidebar, `theme` in localStorage, applied before first paint by `index.html`). The active novel (route folder, a novel note's folder, or the novel filter on data store pages) sets `--novel-accent` / `--novel-accent-dark`, contrast-adjusted by `readableAccent` to 4.5:1 on `--panel-2`; text on accent backgrounds uses `--on-accent`. Novel page has a colour picker that writes `accent` to config.md. Headings use Newsreader (OFL, vendored at `public/fonts/`).
-- Animations: CSS keyframes for the drawer and page changes, `useFlip()` (Web Animations API) for rows moving on filter/sort/group changes. All honour `prefers-reduced-motion`.
+- Sidebar sections (Novels, Data store, Taxonomy, Tools) collapse on a click of their heading (`SideSection`); closed ones are kept in localStorage `sidebarClosed` (Taxonomy starts closed).
+- Destructive buttons use `ConfirmButton`: the first click arms it ("Click to confirm", filled red), a second click within 4s runs it; blur disarms. No `confirm()` dialogs for deletes.
+- Animations: CSS transitions for the drawer, keyframes for page changes, `useFlip()` (Web Animations API) for rows moving on filter/sort/group changes. All honour `prefers-reduced-motion`.
 
 ## Working on this project
 
@@ -214,7 +261,7 @@ Non-GET requests must send `x-requested-with: books-meta-viewer` (blocks cross-s
 
 - Crafting and dismantling as ledger entries (consume a blueprint's components and materials at a chapter, add the output). This would replace Templater `craftItem.js`/`dismantleItem.js`.
 - Status-window callouts (a character's stats and inventory at chapter N) as a `status` callout section.
-- Renaming and deleting notes is left to Obsidian (it updates links); the app only creates and edits.
+- Renaming notes is left to Obsidian (it updates links). Deleting (`DELETE /api/note`, `write.trashNote`) moves a note to the vault's `.trash/` (flat, `Name 2.md` on clashes, like Obsidian's trash) and leaves links to it unresolved; config, ledger and `90. Templater/` notes are refused. Attachments stay.
 - The callout preview uses the app's own callout CSS, not the vault's CSS snippets (they style the whole page).
 
 ## Running as a service

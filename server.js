@@ -11,8 +11,9 @@ import { Blueprints } from "./lib/blueprints.js";
 import { DataStore } from "./lib/datastore.js";
 import { Plans } from "./lib/plans.js";
 import { Stats } from "./lib/stats.js";
+import { Worlds } from "./lib/worlds.js";
 import { fromText, fieldNamed } from "./public/stats-core.js";
-import { patchNote } from "./lib/write.js";
+import { patchNote, trashNote } from "./lib/write.js";
 import { renderMarkdown } from "./lib/render.js";
 import { asCallout, renderTemplate } from "./lib/template.js";
 import { foldStock } from "./lib/ledger.js";
@@ -29,6 +30,7 @@ const blueprints = new Blueprints(vault);
 const store = new DataStore(vault, novels, blueprints);
 const plans = new Plans(vault, novels, store);
 const stats = new Stats(vault, novels, store);
+const worlds = new Worlds(vault, store);
 novels.sheetHook = (novel, owner, set) => stats.sheetValues(novel, owner, set);
 
 const STATIC = {
@@ -37,6 +39,9 @@ const STATIC = {
     "/style.css": ["public/style.css", "text/css"],
     "/outline.js": ["public/outline.js", "text/javascript"],
     "/stats-core.js": ["public/stats-core.js", "text/javascript"],
+    "/map-core.js": ["public/map-core.js", "text/javascript"],
+    "/world.js": ["public/world.js", "text/javascript"],
+    "/map-editor.js": ["public/map-editor.js", "text/javascript"],
     "/fonts/newsreader-latin.woff2": ["public/fonts/newsreader-latin.woff2", "font/woff2"],
     "/vendor/preact.mjs": ["node_modules/preact/dist/preact.mjs", "text/javascript"],
     "/vendor/hooks.mjs": ["node_modules/preact/hooks/dist/hooks.mjs", "text/javascript"],
@@ -103,6 +108,14 @@ const routes = {
         const n = await patchNote(vault, p, { set: b.set ?? {}, unset: b.unset ?? [], body: b.body, baseMtime: b.baseMtime });
         await plans.afterPatch(p);
         return { path: p, mtime: vault.notes.get(p)?.mtime ?? n.mtime };
+    },
+    "DELETE /api/note": async ({ q }) => {
+        const p = need(q.get("path"), "path");
+        const n = found(vault.notes.get(p), "Note");
+        if (p.startsWith("90. Templater/") || ["config", "ledger"].includes(n.fm.type)) throw fail(400, "This note can't be deleted here");
+        const trashed = await trashNote(vault, p, q.get("baseMtime"));
+        await plans.afterPatch(p);
+        return { ok: true, trashed };
     },
     "POST /api/images": async ({ req, q }) => store.attachImage(need(q.get("path"), "path"), need(q.get("filename"), "filename"), await readBody(req)),
 
@@ -219,6 +232,26 @@ const routes = {
         await novels.syncSheet(novel, ledger.owner);
         return { ok: true };
     },
+    // ---- world builder
+    "GET /api/worlds": () => worlds.list(),
+    "GET /api/world": ({ q }) => worlds.world(q.get("world") || null),
+    "POST /api/world/location": async ({ req }) => {
+        const b = await json(req);
+        return { path: await worlds.createLocation({ world: b.world ?? null, parent: b.parent ?? null, name: need(b.name, "name"), scale: b.scale ?? "" }) };
+    },
+    "POST /api/world/move": async ({ req }) => {
+        const b = await json(req);
+        return worlds.move({ path: need(b.path, "path"), parent: b.parent ?? null, world: b.world, baseMtime: b.baseMtime });
+    },
+    "GET /api/map": ({ q }) => worlds.readMap(need(q.get("location"), "location")),
+    "POST /api/map": async ({ req }) => {
+        const b = JSON.parse((await readBody(req, 30 * 1024 * 1024)).toString("utf8") || "{}");
+        return worlds.saveMap(need(b.location, "location"), b.doc, b.baseMtime);
+    },
+    "GET /api/stamps": () => ({ vault: worlds.vaultStamps() }),
+    "GET /api/textures": () => worlds.textures(),
+    "POST /api/textures": async ({ req }) => { const b = await json(req); return worlds.saveTextures(b.textures, b.baseMtime); },
+    "POST /api/stamps": async ({ req, q }) => worlds.addStamp(need(q.get("filename"), "filename"), await readBody(req, 9 * 1024 * 1024), q.get("set") || "Pasted"),
     // ---- planning
     "GET /api/plan": ({ q }) => plans.overview(getNovel(q.get("novel"))),
     "POST /api/plan/chapter": async ({ req }) => {
@@ -283,6 +316,19 @@ async function serveFile(res, rel) {
     fs.createReadStream(abs).pipe(res);
 }
 
+// built-in map stamps (public/stamps), cached: they only change with the app
+async function serveStamp(res, pathname) {
+    const root = path.join(HERE, "public", "stamps");
+    const abs = path.resolve(root, `.${decodeURIComponent(pathname.slice("/stamps".length))}`);
+    const ext = path.extname(abs).slice(1).toLowerCase();
+    const type = ext === "json" ? "application/json" : FILE_TYPES[ext];
+    if (!abs.startsWith(root + path.sep) || !type) throw fail(404, "Not found");
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st?.isFile()) throw fail(404, "Not found");
+    res.writeHead(200, { "content-type": type, "content-length": st.size, "cache-control": ext === "json" ? "no-cache" : "max-age=86400" });
+    fs.createReadStream(abs).pipe(res);
+}
+
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     try {
@@ -294,6 +340,7 @@ const server = http.createServer(async (req, res) => {
             return;
         }
         if (req.method === "GET" && url.pathname.startsWith("/files/")) return await serveFile(res, decodeURIComponent(url.pathname.slice(7)));
+        if (req.method === "GET" && url.pathname.startsWith("/stamps/")) return await serveStamp(res, url.pathname);
         if (req.method === "GET" && STATIC[url.pathname]) {
             const [file, type] = STATIC[url.pathname];
             return send(res, 200, await fsp.readFile(path.join(HERE, file)), type);

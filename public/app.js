@@ -3,6 +3,8 @@ import { h, render } from "preact";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
 import htm from "htm";
 import { parseOutline, serializeOutline } from "./outline.js";
+import { WorldView } from "./world.js";
+import { MapEditor } from "./map-editor.js";
 import { FIELD_TYPES, normalizeTemplates, checkTemplate, checkValue, fromText, toText, parseResource, computeValues, displayValue, defaultKey, fieldId, namesField, fieldNamed } from "./stats-core.js";
 
 const html = htm.bind(h);
@@ -104,13 +106,19 @@ function applyNovelAccent(hex) {
 }
 
 let toastTimer;
-function toast(msg) {
+/** Short message in the corner; `action` {label, run} adds a button (e.g. Undo) and keeps it up longer */
+function toast(msg, action) {
     let el = document.querySelector(".toast");
     if (!el) { el = document.createElement("div"); el.className = "toast"; document.body.append(el); }
     el.textContent = msg;
+    if (action) {
+        const b = Object.assign(document.createElement("button"), { textContent: action.label, className: "toast-action" });
+        b.onclick = () => { el.style.display = "none"; action.run(); };
+        el.append(b);
+    }
     el.style.display = "block";
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.style.display = "none"; }, 2200);
+    toastTimer = setTimeout(() => { el.style.display = "none"; }, action ? 6000 : 2200);
 }
 async function copyText(text, label = "Copied to clipboard") {
     try { await navigator.clipboard.writeText(text); toast(label); }
@@ -144,8 +152,10 @@ addEventListener("beforeunload", (e) => { if (dirtyForms.size) e.preventDefault(
 
 // ------------------------------------------------------------------ side drawer (note and chapter links in tables and inside the drawer)
 
-// stack of hrefs (#/note/… or #/chapter/…) with a cursor, like browser history; closing animates before the stack clears
-let drawer = { stack: [], pos: -1, closing: false };
+// the five most recent drawer pages (hrefs #/note/… or #/chapter/…), newest first; recent[0] is shown.
+// The drawer never closes: it collapses to a tab on the right edge and stays mounted, so unsaved edits survive navigation.
+const DRAWER_RECENT = 5;
+let drawer = { recent: [], open: false };
 const drawerListeners = new Set();
 const setDrawer = (d) => { drawer = d; drawerListeners.forEach((f) => f(d)); };
 function useDrawer() {
@@ -153,27 +163,13 @@ function useDrawer() {
     useEffect(() => { drawerListeners.add(set); return () => drawerListeners.delete(set); }, []);
     return d;
 }
-const DRAWER_MS = 220;
-let closeTimer;
-function closeDrawer({ force } = {}) {
-    if (drawer.pos < 0 || drawer.closing || (!force && !confirmDiscard("drawer"))) return;
-    setDrawer({ ...drawer, closing: true });
-    clearTimeout(closeTimer);
-    closeTimer = setTimeout(() => setDrawer({ stack: [], pos: -1, closing: false }), reducedMotion() ? 0 : DRAWER_MS);
-}
+function collapseDrawer() { if (drawer.open) setDrawer({ ...drawer, open: false }); }
+function expandDrawer() { if (drawer.recent.length && !drawer.open) setDrawer({ ...drawer, open: true }); }
+// opening a page moves it to the front of the recent list (a known page moves up, others shift right)
 function openInDrawer(href) {
-    if (drawer.stack[drawer.pos] === href && !drawer.closing) return;
+    if (drawer.recent[0] === href) return expandDrawer();
     if (!confirmDiscard("drawer")) return;
-    clearTimeout(closeTimer);
-    const live = drawer.closing ? [] : drawer.stack.slice(0, drawer.pos + 1);
-    setDrawer({ stack: [...live, href], pos: live.length, closing: false });
-}
-function drawerBack() {
-    if (drawer.pos <= 0) return closeDrawer();
-    if (confirmDiscard("drawer")) setDrawer({ ...drawer, pos: drawer.pos - 1 });
-}
-function drawerForward() {
-    if (drawer.pos < drawer.stack.length - 1 && confirmDiscard("drawer")) setDrawer({ ...drawer, pos: drawer.pos + 1 });
+    setDrawer({ recent: [href, ...drawer.recent.filter((h) => h !== href)].slice(0, DRAWER_RECENT), open: true });
 }
 // Note and chapter links inside a [data-drawer] container open in the drawer; [data-page] links and modified clicks don't
 document.addEventListener("click", (e) => {
@@ -182,25 +178,40 @@ document.addEventListener("click", (e) => {
     e.preventDefault();
     openInDrawer(a.getAttribute("href"));
 });
-addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer.pos >= 0 && !document.querySelector(".lightbox")) closeDrawer(); });
+addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer.open && !document.querySelector(".lightbox")) collapseDrawer(); });
+
+// a deleted note leaves the recent list; the drawer collapses when nothing is left
+function dropFromDrawer(href) {
+    const recent = drawer.recent.filter((h) => h !== href);
+    setDrawer({ recent, open: drawer.open && recent.length > 0 });
+}
+
+const parseDrawerHref = (href) => href.replace(/^#\//, "").split("/").map(decodeURIComponent);
+function drawerLabel(href, index) {
+    const [name, ...args] = parseDrawerHref(href);
+    if (name === "chapter") return `Chapter ${args[1]}`;
+    const path = args.join("/");
+    const n = index?.notes.find((x) => x.path === path);
+    return n?.fm.title || n?.name || path.split("/").pop().replace(/\.md$/, "");
+}
 
 function Drawer({ index }) {
     const d = useDrawer();
-    if (d.pos < 0) return null;
-    const href = d.stack[d.pos];
-    const [name, ...args] = href.replace(/^#\//, "").split("/").map(decodeURIComponent);
-    return html`<div class=${`drawer-wrap ${d.closing ? "closing" : ""}`}>
-        <div class="drawer-backdrop" onClick=${() => closeDrawer()} />
-        <aside class="drawer" data-drawer>
+    if (!d.recent.length) return null;
+    const href = d.recent[0];
+    const [name, ...args] = parseDrawerHref(href);
+    const label = (h) => drawerLabel(h, index);
+    return html`<div class=${`drawer-wrap ${d.open ? "open" : "collapsed"}`}>
+        <div class="drawer-backdrop" onClick=${collapseDrawer} />
+        <button class="drawer-tab" title=${`Open drawer: ${label(href)}`} onClick=${expandDrawer} tabIndex=${d.open ? -1 : 0}><span>${label(href)}</span></button>
+        <aside class="drawer" data-drawer inert=${!d.open}>
             <div class="drawer-head">
-                <button title=${d.pos ? "Back" : "Close"} onClick=${drawerBack}>←</button>
-                <button title="Forward" disabled=${d.pos >= d.stack.length - 1} onClick=${drawerForward}>→</button>
-                <span class="muted drawer-crumb">${d.pos + 1} / ${d.stack.length}</span>
-                <span style="flex:1" />
-                <button onClick=${() => { if (confirmDiscard("drawer")) { closeDrawer({ force: true }); go(href); } }}>Open page</button>
-                <button title="Close" onClick=${() => closeDrawer()}>✕</button>
+                <div class="drawer-recent">${d.recent.map((h, i) => html`<button key=${h} class=${i ? "" : "on"} title=${h.replace(/^#\//, "")}
+                    onClick=${() => openInDrawer(h)}>${label(h)}</button>`)}</div>
+                <button onClick=${() => { collapseDrawer(); go(href); }}>Open page</button>
+                <button title="Collapse" onClick=${collapseDrawer}>»</button>
             </div>
-            <div class="drawer-body" key=${`${d.pos}:${href}`}>${name === "chapter"
+            <div class="drawer-body" key=${href}>${name === "chapter"
                 ? html`<${ChapterView} folder=${args[0]} n=${args[1]} scope="drawer" />`
                 : html`<${NoteView} index=${index} path=${args.join("/")} scope="drawer" />`}</div>
         </aside>
@@ -255,6 +266,21 @@ function useIndex() {
 }
 
 // ------------------------------------------------------------------ small components
+
+/** Destructive button: the first click arms it ("Click to confirm"), a second click within a few seconds runs it */
+function ConfirmButton({ onConfirm, children, confirmLabel = "Click to confirm", class: cls = "small", ...rest }) {
+    const [armed, setArmed] = useState(false);
+    const timer = useRef();
+    useEffect(() => () => clearTimeout(timer.current), []);
+    const disarm = () => { clearTimeout(timer.current); setArmed(false); };
+    const click = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!armed) { setArmed(true); clearTimeout(timer.current); timer.current = setTimeout(() => setArmed(false), 4000); return; }
+        disarm();
+        onConfirm();
+    };
+    return html`<button class=${`${cls} danger ${armed ? "armed" : ""}`} onClick=${click} onBlur=${disarm} ...${rest}>${armed ? confirmLabel : children}</button>`;
+}
 
 function Chip({ value, links, index, onRemove }) {
     if (!isLink(value)) return html`<span class="chip">${String(value)}${onRemove && html`<span class="x" onClick=${onRemove}>×</span>`}</span>`;
@@ -336,26 +362,36 @@ function LinkField({ value, multiple, target, index, onChange, options: given })
 
 // ------------------------------------------------------------------ layout
 
+const route0 = () => location.hash.replace(/^#\/?/, "").split(/[/?]/)[0];
+
+// Sidebar sections collapse on a click of their heading; closed ones are remembered (Taxonomy starts closed)
+function SideSection({ id, title, closed, toggle, children }) {
+    const open = !closed[id];
+    return html`<section class=${`side-section ${open ? "open" : ""}`}>
+        <h4><button class="side-head" aria-expanded=${open} onClick=${() => toggle(id)}>${title}<span class="caret" aria-hidden="true">▸</span></button></h4>
+        ${open && html`<div class="side-items">${children}</div>`}
+    </section>`;
+}
+
 function Sidebar({ index, novelFolder }) {
     const active = (href) => (location.hash === href ? "active" : "");
-    const [showTax, setShowTax] = useState(store.get("showTax", false));
+    const [closed, setClosed] = useState(() => store.get("sidebarClosed", { taxonomy: !store.get("showTax", false) }));
+    const toggle = (id) => { const c = { ...closed, [id]: !closed[id] }; setClosed(c); store.set("sidebarClosed", c); };
     const [theme, setThemeState] = useState(store.get("theme", "system"));
     const setTheme = (m) => { setThemeState(m); store.set("theme", m); applyTheme(m); };
     if (!index) return html`<nav class="sidebar"><div class="brand">Books Meta Viewer</div></nav>`;
     const cols = Object.keys(index.schema.collections);
     const main = cols.filter((c) => !c.startsWith("Taxonomy/"));
     const tax = cols.filter((c) => c.startsWith("Taxonomy/"));
+    const section = (id, title, items) => html`<${SideSection} id=${id} title=${title} closed=${closed} toggle=${toggle}>${items}<//>`;
     return html`<nav class="sidebar">
         <div class="brand"><a href="#/" style="padding:0">Books Meta Viewer</a></div>
-        <h4>Novels</h4>
-        ${index.novels.map((n) => html`<a class=${`novel-link ${n.folder === novelFolder ? "active" : ""}`} href=${`#/novel/${encodeURIComponent(n.folder)}`}>
-            <span class="novel-dot" style=${`--dot:${novelColour(index, n.folder)}`} aria-hidden="true" /><span class="name">${n.name}</span><span class="count">${n.number}</span></a>`)}
-        <h4>Data store</h4>
-        ${main.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${c}</span><span class="count">${index.counts[c] ?? 0}</span></a>`)}
-        <h4 style="cursor:pointer" onClick=${() => { setShowTax(!showTax); store.set("showTax", !showTax); }}>Taxonomy ${showTax ? "▾" : "▸"}</h4>
-        ${showTax && tax.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${collectionLabel(c)}</span><span class="count">${index.counts[c] ?? 0}</span></a>`)}
-        <h4>Tools</h4>
-        <a class=${active("#/qa")} href="#/qa"><span>Quality checks</span></a>
+        ${section("novels", "Novels", index.novels.map((n) => html`<a class=${`novel-link ${n.folder === novelFolder ? "active" : ""}`} href=${`#/novel/${encodeURIComponent(n.folder)}`}>
+            <span class="novel-dot" style=${`--dot:${novelColour(index, n.folder)}`} aria-hidden="true" /><span class="name">${n.name}</span><span class="count">${n.number}</span></a>`))}
+        <a class=${`side-pill ${route0() === "world" || route0() === "map" ? "active" : ""}`} href="#/world">World builder<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18" /></svg></a>
+        ${section("datastore", "Data store", main.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${c}</span><span class="count">${index.counts[c] ?? 0}</span></a>`))}
+        ${section("taxonomy", "Taxonomy", tax.map((c) => html`<a class=${active(`#/c/${encodeURIComponent(c)}`)} href=${`#/c/${encodeURIComponent(c)}`}><span>${collectionLabel(c)}</span><span class="count">${index.counts[c] ?? 0}</span></a>`))}
+        ${section("tools", "Tools", html`<a class=${active("#/qa")} href="#/qa"><span>Quality checks</span></a>`)}
         <div class="theme-switch" role="group" aria-label="Theme">${THEMES.map(([m, label]) => html`<button class=${theme === m ? "on" : ""} aria-pressed=${theme === m} onClick=${() => setTheme(m)}>${label}</button>`)}</div>
     </nav>`;
 }
@@ -743,6 +779,56 @@ function FieldsEditor({ page, index, spec, scope, linkOptions }) {
     </div>`;
 }
 
+// ------------------------------------------------------------------ note summary (drawer)
+
+// What matters per collection: `facts` print as a compact row, `sections` as subheadings with their values.
+// The description always leads. A schema collection's `summary: {facts, sections}` overrides these.
+const SUMMARY = {
+    Items: { facts: ["cat", "subcat", "rarity", "tier", "grade", "slot", "value", "power-system", "elements"], sections: ["applies-to", "teaches"] },
+    Materials: { facts: ["cat", "rarity", "tier", "density", "power-system", "elements"], sections: ["usage", "sources"] },
+    Recipes: { facts: ["item", "tier", "disciplines", "rarity"], sections: ["components", "materials"] },
+    Abilities: { facts: ["cat", "subcat", "grade", "power-system", "elements", "parent-art"], sections: ["requirements", "reagents", "classes", "sub-arts"] },
+    Races: { facts: ["parent-race", "sapient", "lifespan", "homeworld", "power-system"], sections: ["appearance", "culture", "traits"] },
+    Creatures: { facts: ["cat", "subcat", "temperament", "intelligence", "potential", "potential-sub", "power-system"], sections: ["habitat", "drops"] },
+    "Power Systems": { facts: ["parent", "energy-source", "tradition"], sections: [] },
+    "Power Levels": { facts: ["power-system", "level-kind", "class"], sections: ["sub-levels"] },
+    Worlds: { facts: ["power-system"], sections: ["races"] },
+    Locations: { facts: ["scale", "parent", "world", "cat", "controlled-by", "population", "size", "climate"], sections: [] },
+    Factions: { facts: ["cat", "world", "seat", "power-system"], sections: ["territory", "members", "relations/friendly", "relations/neutral", "relations/hostile"] },
+    taxonomy: { facts: ["parent", "class"], sections: [] },
+    characters: { facts: ["race", "gender", "alive", "age-current", "member-of", "character/power-system", "character/level", "character/sub-level", "character/talent"], sections: ["personality", "appearance", "character/skills"] },
+};
+const fieldLabel = (k) => { const t = k.split("/").pop().replace(/-/g, " "); return t[0].toUpperCase() + t.slice(1); };
+const filled = (v) => !(v == null || v === "" || (Array.isArray(v) && !v.length));
+
+function NoteSummary({ page, index }) {
+    const fm = page.fm;
+    const spec = index?.schema?.collections[page.collection]?.summary
+        ?? SUMMARY[page.collection] ?? (page.collection?.startsWith("Taxonomy/") ? SUMMARY.taxonomy : fm.type === "character" ? SUMMARY.characters : null);
+    const facts = (spec?.facts ?? []).filter((k) => filled(fm[k]));
+    const sections = (spec?.sections ?? []).filter((k) => filled(fm[k]));
+    if (!filled(fm.description) && !facts.length && !sections.length) return null;
+    const value = (k) => k === "value" && filled(fm.currency) ? html`${fm.value} <${Value} v=${fm.currency} links=${page.links} index=${index} />`
+        : html`<${Value} v=${fm[k]} links=${page.links} index=${index} />`;
+    return html`<div class="panel note-summary">
+        ${filled(fm.description) && html`<p class="lead">${String(fm.description)}</p>`}
+        ${facts.length > 0 && html`<dl class="facts">${facts.map((k) => html`<div><dt>${fieldLabel(k)}</dt><dd>${value(k)}</dd></div>`)}</dl>`}
+        ${sections.map((k) => html`<h4>${fieldLabel(k)}</h4><div class="summary-section">${typeof fm[k] === "string" && !isLink(fm[k])
+            ? html`<p>${fm[k]}</p>` : value(k)}</div>`)}
+    </div>`;
+}
+
+// Ranked taxonomy notes (`ordered: true`) show every value of their facet in `class` order
+const ranked = (n) => n.fm.ordered === true && n.fm.class !== "" && n.fm.class != null && !Number.isNaN(Number(n.fm.class));
+function ClassStrip({ page, index }) {
+    if (!page.collection?.startsWith("Taxonomy/") || !ranked(page)) return null;
+    const sibs = (index?.inCollection(page.collection) ?? []).filter(ranked)
+        .sort((a, b) => Number(a.fm.class) - Number(b.fm.class) || a.name.localeCompare(b.name));
+    if (sibs.length < 2) return null;
+    return html`<nav class="class-strip">${sibs.map((n) => html`<a href=${noteHref(n.path)} class=${n.path === page.path ? "on" : ""}>
+        <span class="rank">${n.fm.class}</span>${n.fm.title || n.name}</a>`)}</nav>`;
+}
+
 function NoteView({ index, path, scope = "page" }) {
     const { data: page, error } = useApi(`/api/note?${qs({ path })}`);
     const { data: plan } = useApi(page?.plan ? `/api/plan?${qs({ novel: page.plan.novel })}` : null);
@@ -754,6 +840,32 @@ function NoteView({ index, path, scope = "page" }) {
     const schema = index?.schema;
     const spec = page.plan?.spec ?? (page.collection ? schema?.collections[page.collection] : page.fm.type === "character" ? schema?.characters : null);
     const novel = index?.novels.find((n) => page.path.startsWith(`${n.folder}/`));
+    const linkGroups = (groups) => Object.entries(groups).sort((a, b) => b[1].length - a[1].length).map(([c, list]) => html`<div style="margin-bottom:6px"><b class="muted">${c === "Unresolved" ? c : collectionLabel(c)} (${list.length})</b><div>${list.slice(0, 60).map((b) => b.path ? html`<a class="chip" href=${noteHref(b.path)}>${b.name}</a>` : html`<span class="chip muted">${b.name}</span>`)}${list.length > 60 ? html`<span class="muted"> +${list.length - 60} more</span>` : ""}</div></div>`);
+    const fields = html`<div class="panel">${page.fmError ? html`<p class="muted">Fix the frontmatter in Obsidian to edit fields here.</p>`
+        : html`<${FieldsEditor} key=${page.path} page=${page} index=${index} spec=${spec} scope=${scope} linkOptions=${linkOptions} />`}</div>`;
+    const usage = html`
+        ${page.heldBy?.length > 0 && html`<div class="panel"><h3>Held by</h3>${page.heldBy.map((x) => html`<div><a href=${`#/owner/${encodeURIComponent(x.novel)}/${encodeURIComponent(x.owner)}`}>${x.owner}</a> <span class="muted">${x.qtyText}${x.store !== "inventory" ? ` @ ${x.store}` : ""} · ${x.novel}</span></div>`)}</div>`}
+        ${page.whereUsed?.length > 0 && html`<div class="panel"><h3>Used in</h3><${WhereUsed} uses=${page.whereUsed} /></div>`}
+        ${page.creatureStats && html`<${CreatureNovels} page=${page} index=${index} />`}`;
+    const imageDrop = html`<div class="panel"><${ImageDrop} path=${page.path} /></div>`;
+    const content = html`
+        ${page.blueprint && html`<${BlueprintPanel} page=${page} />`}
+        ${page.body.trim() && (page.plan
+            ? html`<details class="panel"><summary class="muted">Note body (not used by the plan, edit it in Obsidian)</summary><${Html} html=${page.html} /></details>`
+            : html`<div class="panel"><${Html} html=${page.html} /></div>`)}`;
+    const linkedFrom = Object.values(page.backlinks).reduce((n, l) => n + l.length, 0);
+    const deletable = !page.path.startsWith("90. Templater/") && !["config", "ledger"].includes(page.fm.type);
+    const del = async () => {
+        try {
+            const r = await api.send("DELETE", `/api/note?${qs({ path: page.path, baseMtime: page.mtime })}`);
+            markDirty(scope, page.path, false);
+            toast(`Moved to ${r.trashed}`);
+            if (scope === "drawer") dropFromDrawer(noteHref(page.path));
+            else go(page.collection ? `#/c/${encodeURIComponent(page.collection)}` : novel ? `#/novel/${encodeURIComponent(novel.folder)}` : "#/");
+        } catch (e) { toast(e.message); }
+    };
+    const backlinks = Object.keys(page.backlinks).length > 0 && html`<div class="panel"><h3>Linked from</h3>${linkGroups(page.backlinks)}</div>`;
+    const outlinks = Object.keys(page.outlinks ?? {}).length > 0 && html`<div class="panel"><h3>Links to</h3>${linkGroups(page.outlinks)}</div>`;
     return html`<div>
         <div class="spread">
             <div>
@@ -763,35 +875,47 @@ function NoteView({ index, path, scope = "page" }) {
             </div>
             <div class="row">
                 ${page.fm.type === "character" && novel && html`<button onClick=${() => go(`#/owner/${encodeURIComponent(novel.folder)}/${encodeURIComponent(page.name)}`)}>Ledgers</button>`}
+                ${deletable && html`<${ConfirmButton} class="" onConfirm=${del}
+                    title=${`Move to the vault's .trash folder${linkedFrom ? `. ${linkedFrom} note${linkedFrom > 1 ? "s" : ""} link here and will show it as unresolved` : ""}${page.heldBy?.length ? ". Ledger lines still name it" : ""}`}>Delete<//>`}
             </div>
         </div>
         ${page.fmError && html`<div class="warnbox">Frontmatter could not be read: ${page.fmError}</div>`}
-        <${Gallery} images=${page.images} />
-        <div class=${page.plan ? "" : "grid2"}>
-            <div class="panel">${page.fmError ? html`<p class="muted">Fix the frontmatter in Obsidian to edit fields here.</p>`
-                : html`<${FieldsEditor} key=${page.path} page=${page} index=${index} spec=${spec} scope=${scope} linkOptions=${linkOptions} />`}</div>
-            <div>
-                ${page.heldBy?.length > 0 && html`<div class="panel"><h3>Held by</h3>${page.heldBy.map((x) => html`<div><a href=${`#/owner/${encodeURIComponent(x.novel)}/${encodeURIComponent(x.owner)}`}>${x.owner}</a> <span class="muted">${x.qtyText}${x.store !== "inventory" ? ` @ ${x.store}` : ""} · ${x.novel}</span></div>`)}</div>`}
-                ${page.whereUsed?.length > 0 && html`<div class="panel"><h3>Used in</h3><${WhereUsed} uses=${page.whereUsed} /></div>`}
-                ${page.creatureStats && html`<${CreatureNovels} page=${page} index=${index} />`}
-                <div class="panel"><${ImageDrop} path=${page.path} /></div>
-            </div>
-        </div>
-        ${page.blueprint && html`<${BlueprintPanel} page=${page} />`}
-        ${page.body.trim() && (page.plan
-            ? html`<details class="panel"><summary class="muted">Note body (not used by the plan, edit it in Obsidian)</summary><${Html} html=${page.html} /></details>`
-            : html`<div class="panel"><${Html} html=${page.html} /></div>`)}
-        ${Object.keys(page.backlinks).length > 0 && html`<div class="panel"><h3>Linked from</h3>
-            ${Object.entries(page.backlinks).sort((a, b) => b[1].length - a[1].length).map(([c, list]) => html`<div style="margin-bottom:6px"><b class="muted">${collectionLabel(c)} (${list.length})</b><div>${list.slice(0, 60).map((b) => html`<a class="chip" href=${noteHref(b.path)}>${b.name}</a>`)}${list.length > 60 ? html`<span class="muted"> +${list.length - 60} more</span>` : ""}</div></div>`)}</div>`}
+        ${scope === "drawer"
+            // drawer: summary, content, then images on the left; frontmatter and links on the right
+            // (plan notes keep their fields, which are the plan, on the left)
+            ? html`<${ClassStrip} page=${page} index=${index} />
+            <div class="note-cols">
+                <div class="note-main">${page.plan ? fields : html`<${NoteSummary} page=${page} index=${index} />`}${usage}${content}<${Gallery} images=${page.images} />${imageDrop}</div>
+                <div class="note-side">${!page.plan && fields}${backlinks}${outlinks}</div>
+            </div>`
+            : html`<${Gallery} images=${page.images} />
+                <div class=${page.plan ? "" : "grid2"}>${fields}<div>${usage}${imageDrop}</div></div>
+                ${content}${backlinks}${outlinks}`}
     </div>`;
 }
 
 // ------------------------------------------------------------------ create / edit notes
 
+/**
+ * Sizes textareas to their content. Setting height to auto briefly shrinks the page, which clamps the
+ * scroll position of the drawer or page, so scrolled ancestors are restored afterwards.
+ */
+function fitHeights(els, extra = 0) {
+    els = els.filter(Boolean);
+    if (!els.length) return;
+    const scrolled = [];
+    for (let n = els[0].parentElement; n; n = n.parentElement) if (n.scrollTop) scrolled.push([n, n.scrollTop]);
+    const root = document.scrollingElement;
+    if (root?.scrollTop && !scrolled.some(([n]) => n === root)) scrolled.push([root, root.scrollTop]);
+    for (const el of els) el.style.height = "auto";
+    for (const el of els) el.style.height = `${el.scrollHeight + extra}px`;
+    for (const [n, top] of scrolled) n.scrollTop = top;
+}
+
 /** Textarea that grows with its content */
 function AutoTextarea({ value, onInput, class: cls = "", ...rest }) {
     const ref = useRef();
-    useLayoutEffect(() => { const el = ref.current; if (el) { el.style.height = "auto"; el.style.height = `${el.scrollHeight + 2}px`; } });
+    useLayoutEffect(() => fitHeights([ref.current], 2));
     return html`<textarea ref=${ref} class=${`auto ${cls}`} value=${value ?? ""} onInput=${onInput} ...${rest} />`;
 }
 
@@ -828,7 +952,7 @@ function PlanEditor({ value, onChange, placeholder = "First event…" }) {
     const box = useRef();
     // external changes (saved elsewhere, reloaded) replace the outline unless they are our own output
     useEffect(() => { if ((value ?? "") !== emitted.current) { emitted.current = value ?? ""; setItems(fromValue(value)); } }, [value]);
-    const fit = () => { for (const el of refs.current) if (el) { el.style.height = "auto"; el.style.height = `${el.scrollHeight}px`; } };
+    const fit = () => fitHeights(refs.current);
     useLayoutEffect(() => {
         fit();
         if (focus.current) {
@@ -1122,9 +1246,8 @@ function TemplatesEditor({ folder, data, index }) {
         setBusy(false);
     };
     const addTemplate = () => { const name = prompt("Template name", list.length ? "" : "Character"); if (!name?.trim()) return; setList([...list, blankTemplate(name.trim())]); setSel(list.length); };
+    const templateUsers = data.holders.filter((h) => h.assigned && h.template === t?.orig).map((h) => h.name);
     const removeTemplate = () => {
-        const users = data.holders.filter((h) => h.assigned && h.template === t.orig).map((h) => h.name);
-        if (!confirm(`Delete the ${t.name} template?${users.length ? ` ${users.length} notes use it (${users.slice(0, 5).join(", ")}${users.length > 5 ? "…" : ""}).` : ""}`)) return;
         setList(list.filter((_, i) => i !== sel)); setSel(0);
     };
     return html`<div class="panel templates-editor">
@@ -1141,7 +1264,8 @@ function TemplatesEditor({ folder, data, index }) {
                 <label class="row"><input type="checkbox" style="width:auto" checked=${t.default} onChange=${(e) => setList(list.map((x, i) => ({ ...x, default: i === sel ? e.target.checked : e.target.checked ? false : x.default })))} /> default for characters</label>
                 <label class="row"><input type="checkbox" style="width:auto" checked=${t["show-empty"]} onChange=${(e) => setT({ "show-empty": e.target.checked })} /> show empty fields in panels</label>
                 <label class="row muted">callout <input style="width:110px" value=${t.callout} onInput=${(e) => setT({ callout: e.target.value })} /></label>
-                <button class="small danger" onClick=${removeTemplate}>Delete template</button></div>
+                <${ConfirmButton} onConfirm=${removeTemplate}
+                    title=${templateUsers.length ? `${templateUsers.length} notes use it: ${templateUsers.slice(0, 5).join(", ")}${templateUsers.length > 5 ? "…" : ""}` : "No notes use it"}>Delete template<//></div>
         </div>
         <h3 style="margin-top:14px">Fields</h3>
         <datalist id="stat-sections">${sections.map((s) => html`<option value=${s} />`)}</datalist>
@@ -1153,7 +1277,7 @@ function TemplatesEditor({ folder, data, index }) {
                 <input aria-label="Section" placeholder="Section (optional)" list="stat-sections" value=${f.section} onInput=${(e) => setField(fi, { section: e.target.value })} />
                 <input aria-label="Frontmatter key" class="mono" title="Frontmatter key on the sheet" value=${f.key} onInput=${(e) => setField(fi, { key: e.target.value })} />
                 <span class="row"><button class="small" title="Move up" onClick=${() => moveField(fi, -1)}>↑</button><button class="small" title="Move down" onClick=${() => moveField(fi, 1)}>↓</button>
-                    <button class="small danger" title="Remove field" onClick=${() => setT({ fields: t.fields.filter((_, i) => i !== fi) })}>×</button></span>
+                    <${ConfirmButton} title="Remove field" confirmLabel="Confirm" onConfirm=${() => setT({ fields: t.fields.filter((_, i) => i !== fi) })}>×<//></span>
             </div>
             <div class="field-opts">
                 ${(f.type === "number" || f.type === "resource") && html`
@@ -1377,7 +1501,6 @@ function PlotBoard({ folder, plan }) {
 function EntryCard({ e, folder, behaviour, future, showOwner }) {
     const [showText, setShowText] = useState(false);
     const del = async () => {
-        if (!confirm(`Delete ${e.key} ${e.title}?`)) return;
         try { await api.send("DELETE", `/api/ledger/entry?${qs({ ledger: e.ledger, key: e.key })}`); toast("Deleted"); } catch (x) { toast(x.message); }
     };
     const copyLinked = async () => { const r = await api.get(`/api/callout?${qs({ ledger: e.ledger, key: e.key, linked: 1 })}`); copyText(r.text, `Copied ${r.count} linked callouts`); };
@@ -1391,7 +1514,7 @@ function EntryCard({ e, folder, behaviour, future, showOwner }) {
                 ${e.fields.ref && html`<button class="small" onClick=${copyLinked}>⧉ Linked</button>`}
                 <button class="small" onClick=${() => setShowText(!showText)}>${showText ? "Hide" : "Callout"}</button>
                 ${!e.fields["mirror-of"] && html`<button class="small" onClick=${() => go(entryHref(folder, { owner: e.owner, type: e.type, ledger: e.ledger, key: e.key }))}>Edit</button>`}
-                <button class="small danger" onClick=${del}>Delete</button>
+                <${ConfirmButton} title=${`Delete ${e.key} ${e.title}`} onConfirm=${del}>Delete<//>
             </div>
         </div>
         ${Object.entries(e.fields).filter(([k]) => !["id", "ref", "mirror-of"].includes(k)).map(([k, v]) => html`<span class="chip"><b>${k}</b> ${v}</span>`)}
@@ -1631,7 +1754,7 @@ function LinesEditor({ behaviour, lines, setLines, index, novel, owner, createNo
                 <td><input list="setfields" value=${l.set ?? ""} onInput=${(e) => upd(i, { set: e.target.value })} /></td>
                 ${withTarget && html`<td><${Picker} value=${linkLabel(l.with ?? "")} options=${owners} onChange=${(o) => upd(i, { with: o ? toLink(o.label) : "" })} /></td>`}
                 <td><input value=${l.value ?? ""} onInput=${(e) => upd(i, { value: e.target.value })} placeholder="value or [[link]]" /></td>
-                <td><button class="small danger" onClick=${() => remove(i)}>×</button></td></tr>`)}
+                <td><${ConfirmButton} confirmLabel="Confirm" onConfirm=${() => remove(i)}>×<//></td></tr>`)}
             </tbody></table>
             <datalist id="setfields">${[...new Set([...(novel.setFields ?? []), ...(index?.schema.characters?.fields.map(([k]) => k) ?? [])])].map((f) => html`<option value=${f} />`)}</datalist>
             <button class="small" onClick=${() => setLines([...lines, withTarget ? { set: "relation", with: "", value: "" } : { set: "", value: "" }])}>+ Line</button>`;
@@ -1648,7 +1771,7 @@ function LinesEditor({ behaviour, lines, setLines, index, novel, owner, createNo
             <td>${l.action === "transfer-out" ? html`<${Picker} value=${linkLabel(l.to ?? "")} options=${owners} placeholder="receiver" onChange=${(o) => upd(i, { to: o ? toLink(o.label) : "" })} />`
                 : l.action === "move" ? html`<input list="stores" value=${l["to-store"] ?? ""} placeholder="to store" onInput=${(e) => upd(i, { "to-store": e.target.value })} />` : ""}</td>
             <td><input value=${l.note ?? ""} onInput=${(e) => upd(i, { note: e.target.value })} /></td>
-            <td><button class="small danger" onClick=${() => remove(i)}>×</button></td></tr>`)}
+            <td><${ConfirmButton} confirmLabel="Confirm" onConfirm=${() => remove(i)}>×<//></td></tr>`)}
         </tbody></table>
         <datalist id="stores">${["inventory", ...(novel.stores ?? [])].map((s) => html`<option value=${s} />`)}</datalist>
         <button class="small" onClick=${() => setLines([...lines, { action: "add", item: "", qty: "1" }])}>+ Line</button>
@@ -1825,7 +1948,7 @@ function EntryEditor({ index, folder, params }) {
                     ${!linked ? html`<div class="row"><b>Linked entry</b><span class="muted">for another ledger of the same owner, e.g. a journal entry's reward</span>
                         <select onChange=${(e) => e.target.value && setLinked({ type: e.target.value, entry: { title: "", fields: {}, body: "" }, lines: novel.ledgerTypes[e.target.value].behaviour === "stock" ? [{ action: "add", item: "", qty: "1" }] : [] })}>
                             <option value="">+ add…</option>${Object.keys(novel.ledgerTypes).filter((t) => t !== typeName).map((t) => html`<option>${t}</option>`)}</select></div>`
-                    : html`<div class="spread"><b>Linked ${linked.type} entry</b><button class="small danger" onClick=${() => setLinked(null)}>Remove</button></div>
+                    : html`<div class="spread"><b>Linked ${linked.type} entry</b><${ConfirmButton} onConfirm=${() => setLinked(null)}>Remove<//></div>
                         <div class="formgrid" style="margin-top:8px"><label>Title</label><input value=${linked.entry.title} onInput=${(e) => setLinked({ ...linked, entry: { ...linked.entry, title: e.target.value } })} />
                             <${EntryFields} type=${linkedType} entry=${linked.entry} setEntry=${(en) => setLinked({ ...linked, entry: en })} /></div>
                         ${linkedType.behaviour === "log" ? html`<textarea style="margin-top:8px;font-family:inherit" value=${linked.entry.body} onInput=${(e) => setLinked({ ...linked, entry: { ...linked.entry, body: e.target.value } })} />`
@@ -1898,7 +2021,7 @@ function CalloutSettings({ folder }) {
                     <label class="row muted">Default variant <select value=${draft[t.name]?.["default-callout"] ?? ""} onChange=${(e) => setDefault(t.name, e.target.value)}>
                         <option value="">inherit (${t.sharedCallouts && t["default-callout"] ? t["default-callout"] : "default"})</option>${names.map((n) => html`<option>${n}</option>`)}</select></label></div>
                 ${names.map((n) => html`<div style="margin-top:10px">
-                    <div class="spread"><b>${n}</b>${n in own ? html`<span class="row"><span class="badge ok">novel override</span><button class="small danger" onClick=${() => removeCallout(t.name, n)}>Use shared</button></span>` : html`<span class="row"><span class="badge">shared</span><button class="small" onClick=${() => setCallout(t.name, n, t.sharedCallouts[n])}>Override for this novel</button></span>`}</div>
+                    <div class="spread"><b>${n}</b>${n in own ? html`<span class="row"><span class="badge ok">novel override</span><${ConfirmButton} onConfirm=${() => removeCallout(t.name, n)}>Use shared<//></span>` : html`<span class="row"><span class="badge">shared</span><button class="small" onClick=${() => setCallout(t.name, n, t.sharedCallouts[n])}>Override for this novel</button></span>`}</div>
                     ${n in own ? html`<textarea value=${own[n]} onInput=${(e) => setCallout(t.name, n, e.target.value)} />` : html`<pre class="callout-text">${t.sharedCallouts[n]}</pre>`}
                 </div>`)}
                 <button class="small" style="margin-top:8px" onClick=${() => { const n = prompt("Variant name"); if (n) setCallout(t.name, n.trim(), "[!note] {{title}}\n{{body}}\n{{eventLink}}"); }}>+ New variant</button>
@@ -1943,7 +2066,7 @@ function App() {
     const [novelFilter, setNovelFilter] = useState(store.get("novelFilter", ""));
     const setNF = (v) => { setNovelFilter(v); store.set("novelFilter", v); };
     const [a, b] = route.args;
-    useEffect(() => closeDrawer(), [location.hash]);
+    useEffect(() => collapseDrawer(), [location.hash]);
     // the novel you're in tints the app; data store pages follow the novel filter
     const novelFolder = !index ? null
         : ["novel", "owner", "chapter", "entry", "callouts", "newchar"].includes(route.name) ? a
@@ -1964,16 +2087,21 @@ function App() {
         case "entry": view = html`<${EntryEditor} key=${location.hash} index=${index} folder=${a} params=${route.params} />`; break;
         case "callouts": view = html`<${CalloutSettings} key=${a} folder=${a} />`; break;
         case "qa": view = html`<${QAView} />`; break;
+        case "world": view = html`<${WorldView} key=${a ?? ""} index=${index} world=${a ?? null} params=${route.params} />`; break;
+        case "map": view = html`<${MapEditor} key=${a} index=${index} location=${a} />`; break;
         default: view = html`<${Home} index=${index} />`;
     }
     return html`<div class="layout">
         <${Sidebar} index=${index} novelFolder=${novelFolder} />
         <main class="main">
             <div class="topbar"><${Search} index=${index} /><${NovelFilter} index=${index} value=${novelFilter} onChange=${setNF} /></div>
-            <div class="view" key=${route.name + (a ?? "")}>${view}</div>
+            <div class=${`view view-${route.name}`} key=${route.name + (a ?? "")}>${view}</div>
         </main>
         <${Drawer} index=${index} />
     </div>`;
 }
 
 render(html`<${App} />`, document.getElementById("app"));
+
+// shared with world.js and map-editor.js (used only inside components, so the import cycle is safe)
+export { api, useApi, qs, toast, store, go, noteHref, linkLabel, isLink, asList, openInDrawer, ConfirmButton, markDirty, confirmDiscard, Loading, useRoute };

@@ -126,24 +126,51 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
     await wait(300);
     check(!doc.querySelector("section.group h2"), "clicking the active group button ungroups");
 
-    // link chips in the table open the drawer; nested links navigate inside it; back closes at the first page
+    // link chips in the table open the drawer; nested links go to the front of the recent boxes; the drawer collapses instead of closing
     const chip = doc.querySelector("main table a.chip");
     chip.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
     await wait(700);
-    const drawerOpen = () => !!doc.querySelector(".drawer") && !doc.querySelector(".drawer-wrap.closing");
-    check(drawerOpen() && w.location.hash === "#/c/Items", "table link opens the drawer");
-    const nested = doc.querySelector(".drawer-body a.chip[href^='#/note/']");
+    const drawerOpen = () => !!doc.querySelector(".drawer-wrap.open");
+    const recent = () => [...doc.querySelectorAll(".drawer-recent button")].map((b) => b.title);
+    check(drawerOpen() && w.location.hash === "#/c/Items" && recent().length === 1, "table link opens the drawer");
+    check(!!doc.querySelector(".drawer .note-cols .note-side .formgrid") && !doc.querySelector(".drawer .note-main .formgrid"),
+        "drawer note shows frontmatter in the right column");
+    const first = recent()[0];
+    const nested = [...doc.querySelectorAll(".drawer-body a.chip[href^='#/note/']")].find((a) => a.getAttribute("href") !== `#/${first}`);
     if (nested) {
         nested.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
         await wait(700);
-        check(doc.querySelector(".drawer-crumb")?.textContent.trim() === "2 / 2", "nested link navigates inside the drawer");
-        doc.querySelector(".drawer-head button").click();
+        check(recent().length === 2 && recent()[1] === first && doc.querySelector(".drawer-recent button.on") === doc.querySelector(".drawer-recent button"),
+            "nested link opens in front of the previous drawer page", recent().join(" | "));
+        doc.querySelectorAll(".drawer-recent button")[1].click();
         await wait(300);
-        check(doc.querySelector(".drawer-crumb")?.textContent.trim() === "1 / 2", "back returns to the previous drawer page");
+        check(recent().length === 2 && recent()[0] === first, "clicking a recent box moves it to the front", recent().join(" | "));
     }
-    doc.querySelector(".drawer-head button").click();
+    doc.querySelector(".drawer-backdrop").click();
+    await wait(400);
+    check(!drawerOpen() && !!doc.querySelector(".drawer-wrap.collapsed .drawer-tab"), "backdrop click collapses the drawer to a tab");
+    doc.querySelector(".drawer-tab").click();
+    await wait(300);
+    check(drawerOpen() && recent()[0] === first, "clicking the tab reopens the drawer on the same page");
+    w.location.hash = "#/qa";
     await wait(500);
-    check(!doc.querySelector(".drawer"), "back on the first drawer page closes it");
+    check(!drawerOpen() && recent()[0] === first, "navigating collapses the drawer and keeps its pages");
+
+    // drawer summary leads with the description; ranked taxonomy notes show their facet in class order
+    w.location.hash = "#/c/Taxonomy%2FRarity";
+    await wait(600);
+    doc.querySelector("main table a[href^='#/note/']").dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await wait(700);
+    const strip = () => [...doc.querySelectorAll(".drawer .class-strip a")];
+    check(strip().length === 6 && strip().map((a) => +a.querySelector(".rank").textContent).join() === "1,2,3,4,5,6" && doc.querySelectorAll(".drawer .class-strip a.on").length === 1,
+        "ranked taxonomy note shows its classes in order", strip().map((a) => a.textContent).join(" | "));
+    const next = strip().find((a) => !a.classList.contains("on"));
+    next.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
+    await wait(700);
+    check(doc.querySelector(".drawer .class-strip a.on")?.textContent === next.textContent && !!doc.querySelector(".drawer .note-main .note-summary"),
+        "clicking a class opens it in the drawer with its summary");
+    doc.querySelector(".drawer-head button[title='Collapse']").click();
+    await wait(300);
 
     // notes are editable in place with a Save changes button
     const note = index.notes.find((n) => n.collection === "Items");
@@ -179,7 +206,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         row.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
         await wait(900);
         check(/Chapter 14/.test(doc.querySelector(".drawer h1")?.textContent ?? "") && doc.querySelectorAll(".drawer .plan-row").length > 3, "chapter opens in the drawer with its plan");
-        doc.querySelector(".drawer-head button[title='Close']").click();
+        doc.querySelector(".drawer-head button[title='Collapse']").click();
         await wait(400);
 
         // plan a new chapter: Enter keeps the level, Tab makes a sub event
@@ -204,7 +231,7 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         const vol = plan.volumes.find((v) => last + 1 >= v.start && last + 1 <= (v.end ?? Infinity));
         check(saved.includes("- Smoke event\n  \t- Smoke sub event\n  \t- Second sub") && (!vol || saved.includes(`volume: ${vol.label}`)),
             "saving a new chapter plan creates the plan note with its volume", saved.slice(0, 300));
-        doc.querySelector(".drawer-head button[title='Close']").click();
+        doc.querySelector(".drawer-head button[title='Collapse']").click();
         await wait(400);
 
         tab("Plots").click();
@@ -292,6 +319,166 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         const panel = doc.querySelector(".stats-panel")?.textContent ?? "";
         check(/Power\s*40/.test(panel.replace(/\s+/g, " ")) || panel.includes("Power: 40") || /Power.{0,20}40/.test(panel), "owner page shows the stats panel with computed values", panel.slice(0, 200));
     }
+}
+// world builder: outline add + move, then a square-grid map with floors, stamps, text and layers
+{
+    const doc = w.document;
+    const fireEv = (el, type, init = {}) => el.dispatchEvent(new w.MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+    const button = (label, root = doc) => [...root.querySelectorAll("button")].find((b) => b.textContent.trim() === label);
+    const L = "80. Global Data Store/Locations";
+    const novelAWorld = (await get("/api/worlds")).worlds.find((x) => x.name === "Sample World");
+    if (novelAWorld) {
+        w.location.hash = "#/world";
+        await wait(1500);
+        const rows = () => [...doc.querySelectorAll(".loc-row[role=treeitem]")];
+        check(w.location.hash.startsWith("#/world/") && rows().length === novelAWorld.count, "world builder lists the world's locations", `${w.location.hash} ${rows().length} vs ${novelAWorld.count}`);
+        const town = rows().find((r) => r.querySelector(".t")?.textContent === "Sample Town");
+        town.querySelector("[aria-label='Add a sub-location to Sample Town']").click();
+        await wait(300);
+        const input = doc.querySelector(".add-row input");
+        input.value = "Smoke Square"; input.dispatchEvent(new w.Event("input", { bubbles: true }));
+        await wait(100);
+        input.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+        await wait(1200);
+        const sq = fs.readFileSync(`${COPY}/${L}/Smoke Square.md`, "utf8");
+        check(sq.includes('parent: "[[Sample Town]]"') && sq.includes('world: "[[Sample World]]"') && sq.includes('scale: "[[village]]"'), "adding a sub-location writes parent, world and the next scale", sq.slice(0, 300));
+        w.location.hash = "#/qa"; await wait(400); w.location.hash = `#/world/${enc(novelAWorld.path)}`; await wait(1500);
+        rows().find((r) => r.querySelector(".t")?.textContent === "Smoke Square").querySelector("[aria-label='Move Smoke Square']").click();
+        await wait(300);
+        [...doc.querySelectorAll(".move-list button")].find((b) => b.querySelector("b")?.textContent === "Sample Kingdom").click();
+        await wait(100);
+        button("Move", doc.querySelector(".modal")).click();
+        await wait(1200);
+        check(fs.readFileSync(`${COPY}/${L}/Smoke Square.md`, "utf8").includes('parent: "[[Sample Kingdom]]"'), "Move to… changes the parent");
+
+        // map editor
+        w.location.hash = `#/map/${enc(`${L}/Sample Town.md`)}`;
+        await wait(1200);
+        [...doc.querySelectorAll(".kind-pick button")].find((b) => b.textContent.includes("Square grid")).click();
+        await wait(100);
+        button("Create map").click();
+        await wait(1500);
+        const svg = doc.querySelector(".map-svg");
+        check(!!svg && doc.querySelectorAll(".tool-rail button").length >= 12, "a new square-grid map opens in the editor");
+        const at = (x, y) => ({ clientX: x, clientY: y, button: 0, buttons: 1 });
+        doc.querySelector(".tool-rail [aria-label='Paint floor']").click(); await wait(100);
+        fireEv(svg, "pointerdown", at(100, 300)); fireEv(svg, "pointermove", at(160, 300)); fireEv(svg, "pointerup", at(160, 300));
+        await wait(200);
+        button("Stamps").click(); await wait(600);
+        const tile = [...doc.querySelectorAll(".stamp-tile")].find((t) => t.title.startsWith("Steam car"));
+        tile?.click(); await wait(100);
+        fireEv(svg, "pointerdown", at(300, 300)); fireEv(svg, "pointerup", at(300, 300));
+        await wait(300);
+        doc.querySelector(".tool-rail [aria-label='Text and notes']").click(); await wait(100);
+        fireEv(svg, "pointerdown", at(400, 200)); fireEv(svg, "pointerup", at(400, 200));
+        await wait(300);
+        const ta = doc.querySelector(".inspector textarea");
+        ta.value = "Gas leak here"; ta.dispatchEvent(new w.Event("input", { bubbles: true }));
+        await wait(200);
+        // erase floor, a room holding a stamp, a curved strip, snapping off
+        doc.querySelector(".tool-rail [aria-label='Erase floor']").click(); await wait(100);
+        fireEv(svg, "pointerdown", at(100, 300)); fireEv(svg, "pointerup", at(100, 300)); await wait(150);
+        [...doc.querySelectorAll(".tool-rail button")].find((b) => b.getAttribute("aria-label") === "Room: floor + walls").click(); await wait(100);
+        fireEv(svg, "pointerdown", at(450, 330)); fireEv(svg, "pointermove", at(580, 460)); fireEv(svg, "pointerup", at(580, 460)); await wait(300);
+        button("Stamps").click(); await wait(300);
+        [...doc.querySelectorAll(".stamp-tile")].find((t) => t.title.startsWith("Crate"))?.click(); await wait(100);
+        fireEv(svg, "pointerdown", at(500, 380)); fireEv(svg, "pointerup", at(500, 380)); await wait(300);
+        // grow the room with a box, then put a door in its wall
+        const toolBtn = (label) => [...doc.querySelectorAll(".tool-rail button")].find((b) => b.getAttribute("aria-label").startsWith(label));
+        toolBtn("Add to or cut from a room").click(); await wait(100);
+        fireEv(svg, "pointerdown", at(560, 380)); fireEv(svg, "pointermove", at(650, 430)); fireEv(svg, "pointerup", at(650, 430)); await wait(200);
+        toolBtn("Opening, door or window").click(); await wait(100);
+        fireEv(svg, "pointermove", at(500, 334)); fireEv(svg, "pointerdown", at(500, 334)); fireEv(svg, "pointerup", at(500, 334)); await wait(200);
+        // a second room, joined to the first: dragging one moves both
+        [...doc.querySelectorAll(".tool-rail button")].find((b) => b.getAttribute("aria-label") === "Room: floor + walls").click(); await wait(100);
+        fireEv(svg, "pointerdown", at(250, 560)); fireEv(svg, "pointermove", at(380, 650)); fireEv(svg, "pointerup", at(380, 650)); await wait(300);
+        toolBtn("Select").click(); await wait(100);
+        // (jsdom has no hit testing: events go straight to each room's own element)
+        const roomEls = () => [...doc.querySelectorAll(".layer-active g[data-id]")].filter((g) => g.querySelector(":scope > path[pointer-events='all']") && g.getAttribute("transform"));
+        const [r1] = roomEls();
+        fireEv(r1, "pointerdown", at(470, 440)); fireEv(svg, "pointerup", at(470, 440)); await wait(100);
+        fireEv(roomEls()[1], "pointerdown", { ...at(300, 600), shiftKey: true }); fireEv(svg, "pointerup", { ...at(300, 600), shiftKey: true }); await wait(150);
+        w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "g", ctrlKey: true, bubbles: true })); await wait(200);
+        const saveNow = async () => { w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true })); await wait(1200); };
+        await saveNow();
+        const mapFile = `${COPY}/80. Global Data Store/_Attachments/Maps/Sample Town (Map).svg`;
+        const roomsOf = () => JSON.parse(fs.readFileSync(mapFile, "utf8").match(/<!\[CDATA\[([\s\S]*?)\]\]><\/metadata>/)[1]).layers[0].objects.filter((o) => o.type === "room");
+        const before = roomsOf();
+        fireEv(roomEls()[1], "pointerdown", at(300, 600)); fireEv(svg, "pointermove", at(360, 600)); fireEv(svg, "pointerup", at(360, 600)); await wait(200);
+        await saveNow();
+        const after = roomsOf();
+        const moved = after.map((r) => r.x - (before.find((b) => b.id === r.id)?.x ?? NaN));
+        check(before.length === 2 && before[0].group && before[0].group === before[1].group && moved.every((m) => m > 0 && Math.abs(m - moved[0]) < 0.01),
+            "joined rooms share a group and move together", JSON.stringify(before.map((r) => [r.x, r.group])) + " moved " + JSON.stringify(moved));
+        doc.querySelector(".tool-rail [aria-label^='Track or strip']").click(); await wait(100);
+        for (const [x, y] of [[100, 120], [200, 150], [300, 120]]) { fireEv(svg, "pointerdown", at(x, y)); fireEv(svg, "pointerup", at(x, y)); await wait(50); }
+        w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await wait(200);
+        // a derived texture made in the Textures panel, then painted
+        button("Textures").click(); await wait(300);
+        const planks = [...doc.querySelectorAll(".tex-item")].find((x) => x.querySelector(".tex-name")?.textContent === "Wood planks");
+        button("New from this", planks).click(); await wait(200);
+        button("Save texture").click(); await wait(1200);
+        fireEv(svg, "pointerdown", at(120, 500)); fireEv(svg, "pointerup", at(120, 500)); await wait(200);
+        doc.querySelector(".snap-toggle").click(); await wait(100);
+        // pipes snap end to end (grid snapping is off now)
+        button("Stamps").click(); await wait(300);
+        [...doc.querySelectorAll(".stamp-tile")].find((t) => t.title.startsWith("Copper straight"))?.click(); await wait(100);
+        fireEv(svg, "pointerdown", at(120, 220)); fireEv(svg, "pointerup", at(120, 220)); await wait(200);
+        fireEv(svg, "pointermove", at(143, 223)); fireEv(svg, "pointerdown", at(143, 223)); fireEv(svg, "pointerup", at(143, 223)); await wait(200);
+        button("Layers").click(); await wait(200);
+        button("+ Layer above the current one").click(); await wait(200);
+        button("Only this layer", doc.querySelector(".layers-panel")).click(); await wait(200);
+        button("Save").click();
+        await wait(1500);
+        const file = `${COPY}/80. Global Data Store/_Attachments/Maps/Sample Town (Map).svg`;
+        const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+        const m = text.match(/<!\[CDATA\[([\s\S]*?)\]\]><\/metadata>/);
+        const saved = m ? JSON.parse(m[1]) : null;
+        const ground = saved?.layers[0];
+        check(!!saved && Object.keys(ground.floor).length >= 1 && ground.objects.some((o) => o.type === "stamp" && o.src.includes("steam-car")) && ground.objects.some((o) => o.text === "Gas leak here")
+            && saved.layers.length === 2 && saved.view === "current", "map saves floors, stamps, text and layers into the SVG", JSON.stringify(saved)?.slice(0, 400));
+        const texNote = fs.existsSync(`${COPY}/90. Templater/Map Textures.md`) ? fs.readFileSync(`${COPY}/90. Templater/Map Textures.md`, "utf8") : "";
+        // (the vault may already have a "Wood planks (aged)", so the new id can carry a number)
+        const newTex = Object.entries(saved?.textures ?? {}).find(([, t]) => t.from === "wood-planks" && Array.isArray(t.details))?.[0];
+        check(!!newTex && texNote.includes(`${newTex}:`) && Object.values(ground?.floor ?? {}).includes(newTex) && text.includes(`id="f-${newTex}"`),
+            "a derived texture is saved to Map Textures.md, painted, and copied into the map", texNote.slice(0, 200) + JSON.stringify(saved?.textures));
+        const pipes = ground?.objects.filter((o) => o.src?.includes("pipe-copper-straight")) ?? [];
+        check(pipes.length === 2 && Math.abs(Math.abs(pipes[1].x - pipes[0].x) - 64) < 0.01 && Math.abs(pipes[1].y - pipes[0].y) < 0.01, "a pipe placed near another snaps end to end", JSON.stringify(pipes.map((x) => [x.x, x.y])));
+        const room = ground?.objects.find((o) => o.type === "room");
+        check(room?.shapes?.some((x) => x.op === "add" && x.shape === "rect") && room.shapes.some((x) => x.op === "open") && room.children?.some((c) => c.src?.includes("/door-swing.svg")),
+            "a room grows with an added box and gets a door in its wall", JSON.stringify(room?.shapes));
+        check(!!room && room.children?.some((c) => c.src?.includes("crate")) && !ground.objects.some((o) => o.src?.includes("crate")), "a room holds the stamp placed inside it", JSON.stringify(room)?.slice(0, 300));
+        check(ground?.objects.some((o) => o.type === "ribbon" && o.style === "railway" && o.pts.length === 3) && saved.snap === false, "a curved railway strip is saved and snapping can be turned off", JSON.stringify(ground?.objects.filter((o) => o.type === "ribbon")) + " snap=" + saved.snap);
+        check(!ground?.floor["0,0"] || Object.keys(ground.floor).length >= 1, "erase floor tool runs");
+        check(text.includes("data:image/svg+xml;base64,") && fs.readFileSync(`${COPY}/${L}/Sample Town.md`, "utf8").includes('map: "[[Sample Town (Map).svg]]"'), "the saved SVG embeds its stamps and the location links it");
+    }
+}
+// sidebar sections collapse on their heading and remember it
+{
+    const doc = w.document;
+    const head = (t) => [...doc.querySelectorAll(".sidebar .side-head")].find((b) => b.textContent.startsWith(t));
+    const links = () => doc.querySelectorAll(".sidebar a[href^='#/c/']").length;
+    const before = links();
+    head("Data store").click(); await wait(200);
+    check(links() < before && head("Data store").getAttribute("aria-expanded") === "false" && JSON.parse(w.localStorage.getItem("sidebarClosed")).datastore === true,
+        "clicking a sidebar heading collapses its section", `${before} -> ${links()}`);
+    head("Data store").click(); await wait(200);
+    check(links() === before, "clicking it again shows the items");
+}
+// deleting a note: the button needs a second click, the note goes to .trash, protected notes are refused
+{
+    const doc = w.document;
+    const send = (method, p, body) => realFetch(new URL(p, BASE), { method, headers: { "x-requested-with": "books-meta-viewer", "content-type": "application/json" }, body: body && JSON.stringify(body) }).then(async (r) => ({ status: r.status, ...(await r.json()) }));
+    const { path } = await send("POST", "/api/plan/plot", { novel: novel.folder, title: "Smoke Delete Plot", fm: {} });
+    w.location.hash = `#/note/${enc(path)}`;
+    await wait(1200);
+    const delBtn = () => [...doc.querySelectorAll("main button.danger")].find((b) => /Delete|confirm/.test(b.textContent));
+    delBtn().click(); await wait(300);
+    check(fs.existsSync(`${COPY}/${path}`) && delBtn()?.textContent === "Click to confirm", "first click on Delete only asks to confirm");
+    delBtn().click(); await wait(1200);
+    check(!fs.existsSync(`${COPY}/${path}`) && fs.existsSync(`${COPY}/.trash/Smoke Delete Plot.md`), "second click moves the note to .trash", w.location.hash);
+    const r = await send("DELETE", `/api/note?path=${enc(`${novel.folder}/config.md`)}`);
+    check(r.status === 400 && fs.existsSync(`${COPY}/${novel.folder}/config.md`), "config notes can't be deleted", JSON.stringify(r));
 }
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);
