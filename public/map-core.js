@@ -13,7 +13,7 @@ const n1 = (v) => Math.round(v * 10) / 10;
 // with one variant, picked per square, so large areas don't repeat. Derived textures ("Aged planks") change a texture's
 // age, colour variation, tint and detail.
 
-export const VARIANTS = 24;
+export const VARIANTS = 32;
 const TILE = 12; // squares per side of the repeating tile that scatters the variants
 
 // deterministic pseudo-random numbers, so textures are the same everywhere
@@ -79,6 +79,129 @@ const STRUCTURES = {
     furrows: (r, c) => `<path d="M0 6H64M0 18H64M0 30H64M0 42H64M0 54H64" stroke="${c(c.line)}" stroke-width="3"/>`,
 };
 
+// Structures whose pieces cross square edges (planks, cobbles, bricks, flagstones) are laid out as one continuous,
+// seamless piece of floor over P × P px instead of square by square, so a plank keeps one shade along its whole length.
+// Each piece gets its own random shade; the layout wraps at its edges so it repeats without a seam.
+const wrapRect = (P, x, y, w, h, attrs) => { const a = `<rect x="${n1(x)}" y="${n1(y)}" width="${n1(w)}" height="${n1(h)}" ${attrs}/>`; return x + w > P ? a + `<rect x="${n1(x - P)}" y="${n1(y)}" width="${n1(w)}" height="${n1(h)}" ${attrs}/>` : a; };
+/** lengths in [min, max] (multiples of q) that add up to exactly P */
+function runs(r, P, min, max, q = 1) {
+    const out = [];
+    let left = P;
+    while (left > 0) {
+        let l = Math.round((min + r() * (max - min)) / q) * q;
+        if (left - l < min) l = left; // last piece takes the rest (or merges a too-short remainder)
+        out.push(l); left -= l;
+    }
+    return out;
+}
+const TILE_STRUCTURES = {
+    // ---- roofs (rows run left to right; turn the room or strip to turn the roof)
+    rooftiles: { period: 6, draw: (r, c, P) => {
+        // overlapping rows of round-ended clay tiles, each row half a tile along from the last
+        let s = "";
+        for (let y = -6, row = 0; y < P; y += 14, row++) for (let x0 = 0; x0 < P; x0 += 16) {
+            const x = (x0 + (row % 2) * 8) % P, f = c(c.stone, r() * 0.12 - 0.06), d = (xx) => `M${n1(xx)} ${y}h16v12q-8 9 -16 0z`;
+            for (const xx of x + 16 > P ? [x, x - P] : [x]) s += `<path d="${d(xx)}" fill="${f}" stroke="${c(c.line)}" stroke-width=".8"/><path d="M${n1(xx + 3)} ${y + 3}v8" stroke="${c(c.stone, 0.1)}" stroke-width="1.2" opacity=".6"/>`;
+        }
+        return s;
+    } },
+    slates: { period: 6, draw: (r, c, P) => {
+        let s = "";
+        for (let y = 0; y < P; y += 12) {
+            let x = r() * P;
+            for (const w of runs(r, P, 16, 28)) { s += wrapRect(P, x % P, y, w - 1, 13, `fill="${c(c.stone, r() * 0.1 - 0.05)}" stroke="${c(c.line)}" stroke-width=".8"`); x += w; }
+        }
+        return s + `<path d="${Array.from({ length: P / 12 }, (_, i) => `M0 ${i * 12 + 12.5}H${P}`).join("")}" stroke="${c(c.line, -0.05)}" stroke-width="1.6" opacity=".6"/>`;
+    } },
+    shingles: { period: 6, draw: (r, c, P) => {
+        let s = "";
+        for (let y = 0; y < P; y += 12) {
+            let x = r() * P;
+            for (const w of runs(r, P, 9, 30)) { s += wrapRect(P, x % P, y, w - 1.2, 12, `fill="${c(c.stone, r() * 0.14 - 0.07)}"`); x += w; }
+        }
+        return s + `<path d="${Array.from({ length: P / 12 }, (_, i) => `M0 ${i * 12 + 12}H${P}`).join("")}" stroke="${c(c.line)}" stroke-width="1.4"/>`;
+    } },
+    corrugated: { period: 12, draw: (r, c, P) => {
+        // sheets two squares wide, each its own shade, with ridges every 8 px
+        let s = "";
+        for (let y = 0; y < P; y += 128) for (let x = 0; x < P; x += 128) {
+            const sh = r() * 0.1 - 0.05;
+            s += `<rect x="${x}" y="${y}" width="128" height="128" fill="${c(c.stone, sh)}"/>`;
+            let d1 = "", d2 = "";
+            for (let i = 0; i < 16; i++) { d1 += `M${x + i * 8 + 2} ${y}v128`; d2 += `M${x + i * 8 + 6} ${y}v128`; }
+            s += `<path d="${d1}" stroke="${c(c.stone, sh + 0.12)}" stroke-width="2.4"/><path d="${d2}" stroke="${c(c.stone, sh - 0.12)}" stroke-width="2.4"/>`;
+        }
+        return s + `<path d="${Array.from({ length: P / 128 }, (_, i) => `M0 ${i * 128}H${P}M${i * 128} 0V${P}`).join("")}" stroke="${c(c.line)}" stroke-width="1.6"/>`;
+    } },
+    seam: { period: 12, draw: (r, c, P) => {
+        // standing-seam metal: panels with raised seams between them
+        let s = "", seams = "";
+        for (let x = 0; x < P; x += 24) { s += `<rect x="${x}" y="0" width="24" height="${P}" fill="${c(c.stone, r() * 0.08 - 0.04)}"/>`; seams += `M${x + 0.5} 0V${P}`; }
+        return s + `<path d="${seams}" stroke="${c(c.line)}" stroke-width="3"/><path d="${seams.replace(/M(\d+(\.\d+)?) /g, (m, x) => `M${+x + 1.6} `)}" stroke="${c(c.stone, 0.15)}" stroke-width="1"/>`;
+    } },
+    glass: { period: 12, draw: (r, c, P) => {
+        // glazed roof: panes in an iron frame, each pane its own tint, with a highlight
+        let s = "";
+        for (let y = 0; y < P; y += 48) for (let x = 0; x < P; x += 32) {
+            s += `<rect x="${x}" y="${y}" width="32" height="48" fill="${c(c.stone, r() * 0.08 - 0.04)}"/><path d="M${x + 6} ${y + 38}L${x + 24} ${y + 8}" stroke="#ffffff" stroke-width="2" opacity="${n1(0.15 + r() * 0.25)}"/>`;
+        }
+        let d = "";
+        for (let x = 0; x <= P; x += 32) d += `M${x} 0V${P}`;
+        for (let y = 0; y <= P; y += 48) d += `M0 ${y}H${P}`;
+        return s + `<path d="${d}" stroke="${c(c.line)}" stroke-width="3"/>`;
+    } },
+    rolls: { period: 12, draw: (r, c, P) => {
+        // flat roof felt or lead in rolls, with overlapping seams
+        let s = "";
+        for (let y = 0; y < P; y += 48) {
+            s += `<rect x="0" y="${y}" width="${P}" height="48" fill="${c(c.base, r() * 0.06 - 0.03)}"/>`;
+            let x = r() * P;
+            for (const w of runs(r, P, 96, 240)) { s += `<path d="M${n1(x % P)} ${y}v48" stroke="${c(c.line)}" stroke-width="1.2" opacity=".8"/>`; x += w; }
+            s += `<path d="M0 ${y + 47}H${P}" stroke="${c(c.line)}" stroke-width="2.2"/><path d="M0 ${y + 45}H${P}" stroke="${c(c.base, 0.06)}" stroke-width="1"/>`;
+        }
+        return s;
+    } },
+    planks: { period: 12, draw: (r, c, P) => {
+        let s = "", lines = "";
+        for (let y = 0; y < P; y += 16) {
+            let x = r() * P;
+            for (const len of runs(r, P, 40, 170)) {
+                const shade = r() * 0.1 - 0.05;
+                s += wrapRect(P, x % P, y, len, 16, `fill="${c(c.base, shade)}"`);
+                const gy = y + 4 + r() * 8;
+                s += wrapRect(P, (x + 3) % P, gy, len - 6, 0.7, `fill="${c(c.line, 0.08)}" opacity=".55"`);
+                lines += `M${n1(x % P)} ${y}v16`;
+                x += len;
+            }
+            lines += `M0 ${y + 16}H${P}`;
+        }
+        return s + `<path d="${lines}" stroke="${c(c.line)}" stroke-width="1.4" fill="none"/>`;
+    } },
+    cobble: { period: 6, draw: (r, c, P) => {
+        let s = "";
+        for (let y = 0, row = 0; y < P; y += 16, row++) for (let x0 = 0; x0 < P; x0 += 16) {
+            const x = (x0 + (row % 2) * 8 + 1 + r() * 1.5) % P;
+            s += wrapRect(P, x, y + 1 + r() * 1.5, 12.5 + r() * 1.5, 12 + r() * 1.5, `rx="${n1(4 + r() * 2)}" fill="${c(c.stone, r() * 0.12 - 0.06)}" stroke="${c(c.line)}" stroke-width=".8"`);
+        }
+        return s;
+    } },
+    bricks: { period: 12, draw: (r, c, P) => {
+        let s = "";
+        for (let y = 0, row = 0; y < P; y += 16, row++) for (let x0 = 0; x0 < P; x0 += 32) s += wrapRect(P, (x0 + (row % 2) * 16 + 0.7) % P, y + 0.7, 30.6, 14.6, `fill="${c(c.base, r() * 0.1 - 0.05)}" stroke="${c(c.line)}" stroke-width="1.4"`);
+        return s;
+    } },
+    flagstone: { period: 12, draw: (r, c, P) => {
+        let s = "";
+        let y = 0;
+        for (const h of runs(r, P, 16, 48, 8)) {
+            let x = Math.floor(r() * P / 8) * 8;
+            for (const w of runs(r, P, 24, 72, 8)) { s += wrapRect(P, x % P, y, w, h, `fill="${c(c.base, r() * 0.08 - 0.04)}" stroke="${c(c.line)}" stroke-width="1.6"`); x += w; }
+            y += h;
+        }
+        return s;
+    } },
+};
+
 // generated detail: draw(rng, count, colour fn, colour, S = size, V = colour variation; 1 = normal) -> markup in one 64×64 square
 const P = (r) => [n1(r() * 64), n1(r() * 64)];
 const J = (r, amp, V) => (r() - 0.5) * 2 * amp * V; // colour jitter
@@ -101,6 +224,7 @@ export const DETAILS = {
     ripples: { name: "Ripples", max: 10, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), w = (6 + r() * 6) * S; return `<path d="M${x} ${y}q${n1(w / 2)} ${n1(-4 * S)} ${n1(w)} 0t${n1(w)} 0" stroke="${c(col, J(r, 0.05, V))}" stroke-width="1.4" fill="none" stroke-linecap="round"/>`; }).join("") },
     sparkle: { name: "Sparkle", max: 20, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r); return `<circle cx="${x}" cy="${y}" r="${n1((0.6 + r() * 1) * S)}" fill="${c(col, J(r, 0.03, V))}"/>`; }).join("") },
     glow: { name: "Glowing cracks", max: 6, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { let [x, y] = P(r); let d = `M${x} ${y}`; for (let i = 0; i < 5; i++) { x = n1(x + (r() * 12 - 6) * S); y = n1(y + (r() * 12 - 6) * S); d += `L${x} ${y}`; } return `<path d="${d}" stroke="${c(col, J(r, 0.05, V))}" stroke-width="${n1(1.5 + r() * 1.5)}" fill="none" stroke-linecap="round"/>`; }).join("") },
+    straw: { name: "Straw", max: 120, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), l = (6 + r() * 8) * S, a = 1.3 + (r() - 0.5) * 0.5; return `<path d="M${x} ${y}l${n1(Math.cos(a) * l)} ${n1(Math.sin(a) * l)}" stroke="${c(col, J(r, 0.09, V))}" stroke-width="${n1(0.8 + r() * 0.5)}" stroke-linecap="round"/>`; }).join("") },
     "map-trees": { name: "Tiny trees", max: 16, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r); return `<path d="M${x} ${n1(y - 7 * S)}l${n1(5 * S)} ${n1(9 * S)}h${n1(-10 * S)}z" fill="${c(col, J(r, 0.05, V))}" stroke="${c(col, -0.15)}" stroke-width="1"/><path d="M${x} ${n1(y + 2 * S)}v${n1(3 * S)}" stroke="#5e4b33" stroke-width="1.2"/>`; }).join("") },
     "map-hills": { name: "Tiny hills", max: 8, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), w = (6 + r() * 6) * S; return `<path d="M${x} ${y}q${n1(w)} -${n1(w * 1.4)} ${n1(w * 2)} 0" stroke="${c(col, J(r, 0.05, V))}" stroke-width="1.6" fill="none"/>`; }).join("") },
     "map-peaks": { name: "Tiny peaks", max: 8, draw: (r, n, c, col, S, V) => Array.from({ length: n }, () => { const [x, y] = P(r), w = (6 + r() * 6) * S; return `<path d="M${x} ${y}l${n1(w)} -${n1(w * 1.6)} ${n1(w)} ${n1(w * 1.6)}" stroke="${c(col, J(r, 0.05, V))}" stroke-width="1.6" fill="#ddd2b8"/>`; }).join("") },
@@ -142,6 +266,20 @@ export const TEXTURES = {
     grating: { name: "Iron grating", group: "Indoor", color: "#2f2f33", structure: "grating", line: "#5d5d66", vary: 0.1, details: [["rust", 0.3, "#7a4123"]] },
     cave: { name: "Cave floor", group: "Indoor", color: "#5a544c", vary: 0.4, details: [["speckle", 28, "#4b463f"], ["pebbles", 5, "#6e675d"], ["cracks", 0.3, "#3f3a34"]] },
     void: { name: "Darkness", group: "Indoor", color: "#1d1c1a", vary: 0, details: [] },
+    // roofs
+    "roof-clay": { name: "Clay tiles", group: "Roof", color: "#6e2f1c", structure: "rooftiles", stone: "#b5552f", line: "#5e2716", vary: 0.35, details: [["moss", 0.15, "#6f7d45"], ["stains", 0.3, "#4a2214"]] },
+    "roof-clay-brown": { name: "Clay tiles (brown)", group: "Roof", color: "#4e3424", structure: "rooftiles", stone: "#8a5a3a", line: "#3e281b", vary: 0.35, details: [["moss", 0.2, "#6f7d45"], ["stains", 0.3, "#2f2016"]] },
+    "roof-slate": { name: "Slate", group: "Roof", color: "#2f343b", structure: "slates", stone: "#58616c", line: "#262a30", vary: 0.4, details: [["moss", 0.12, "#5f7348"], ["stains", 0.25, "#3a4048"]] },
+    "roof-shingle": { name: "Wooden shingles", group: "Roof", color: "#4e3520", structure: "shingles", stone: "#94673e", line: "#3a2816", vary: 0.45, details: [["moss", 0.25, "#5f7d45"], ["stains", 0.3, "#3a2816"]] },
+    "roof-thatch": { name: "Thatch", group: "Roof", color: "#a8864e", vary: 0.4, details: [["straw", 45, "#c2a062"], ["straw", 22, "#8a6a38"], ["stains", 0.5, "#7d6338"]] },
+    "roof-corrugated": { name: "Corrugated iron", group: "Roof", color: "#7f858c", structure: "corrugated", stone: "#9aa0a8", line: "#5d6268", vary: 0.3, details: [["rust", 0.15, "#8a4a26"], ["stains", 0.2, "#6f747b"]] },
+    "roof-corrugated-rust": { name: "Rusty corrugated iron", group: "Roof", color: "#6e4026", structure: "corrugated", stone: "#8a5434", line: "#4a2a18", vary: 0.5, details: [["rust", 1.2, "#a0522d"], ["stains", 0.6, "#4a2a18"]] },
+    "roof-copper": { name: "Copper (verdigris)", group: "Roof", color: "#4f8f7c", structure: "seam", stone: "#6aa592", line: "#3c6f60", vary: 0.4, details: [["stains", 0.5, "#8fbfae"], ["rust", 0.15, "#a8743f"]] },
+    "roof-zinc": { name: "Zinc standing seam", group: "Roof", color: "#8d949b", structure: "seam", stone: "#a3a9b0", line: "#6f757c", vary: 0.25, details: [["stains", 0.3, "#7d838a"]] },
+    "roof-glass": { name: "Glazed roof", group: "Roof", color: "#8fb8c4", structure: "glass", stone: "#a9cfd8", line: "#2b2b30", vary: 0.3, details: [["stains", 0.25, "#6f8f97"]] },
+    "roof-felt": { name: "Felt (flat roof)", group: "Roof", color: "#3d3d42", structure: "rolls", line: "#2a2a2e", vary: 0.25, details: [["pebbles", 6, "#6e6a62"], ["puddles", 0.15, "#5d7580"], ["stains", 0.4, "#2f2f33"]] },
+    "roof-lead": { name: "Lead (flat roof)", group: "Roof", color: "#7d8590", structure: "rolls", line: "#5e6570", vary: 0.25, details: [["stains", 0.5, "#9aa3ad"]] },
+    "roof-gravel": { name: "Gravel roof", group: "Roof", color: "#77736b", vary: 0.25, details: [["pebbles", 20, "#8d877f"], ["pebbles", 9, "#5f5b55"], ["puddles", 0.1, "#5d7580"]] },
     parchment: { name: "Parchment", group: "Map", color: "#efe6cf", vary: 0.15, details: [["stains", 1, "#e2d5b5"], ["speckle", 8, "#e3d6b8"]] },
     sea: { name: "Sea", group: "Map", color: "#b9cfd2", vary: 0.1, details: [["ripples", 1.5, "#9db8bc"]] },
     "map-forest": { name: "Forest (map)", group: "Map", color: "#c9d3a8", vary: 0.15, details: [["map-trees", 6, "#6d8a4c"]] },
@@ -193,11 +331,12 @@ function variantParts(t, k) {
     // structured floors (planks, tiles…) shift colour per square; natural ground barely does, its variation comes
     // from soft blotches that spill over square edges, so no patchwork shows
     const natural = (t.structure ?? "none") === "none";
-    const k0 = natural ? 0.15 : 0.5;
+    const continuous = !!TILE_STRUCTURES[t.structure];
+    const k0 = natural ? 0.15 : 0.3;
     const j = { h: (r() - 0.5) * 12 * v * k0, l: (r() - 0.5) * 0.08 * v * k0, s: (r() - 0.5) * 0.3 * v * k0 };
     const col = (hex, dl = 0) => paint(hex, t, { ...j, l: j.l + dl });
     const c = Object.assign((hex, dl) => col(hex, dl), { base: t.color, line: t.line ?? t.color, stone: t.stone ?? t.color, dark: t.dark ?? "#2f2c29", accent: t.accent ?? "#c9a14a" });
-    const base = `<rect width="64" height="64" fill="${col(t.color)}"/>` + (STRUCTURES[t.structure ?? "none"] ?? STRUCTURES.none)(r, c);
+    const base = continuous ? "" : `<rect width="64" height="64" fill="${col(t.color)}"/>` + (STRUCTURES[t.structure ?? "none"] ?? STRUCTURES.none)(r, c);
     let s = "";
     if (natural && v > 0) for (let i = 0, m = Math.round(1 + v * 2); i < m; i++) {
         const [x, y] = P(r);
@@ -215,9 +354,24 @@ function variantParts(t, k) {
     return { base, over: s };
 }
 
+/** The continuous floor layer of a texture whose structure crosses squares: pattern `fl-<id>` of period × period squares */
+function continuousLayer(t) {
+    const ts = TILE_STRUCTURES[t.structure];
+    if (!ts) return null;
+    const P = ts.period * CELL;
+    const r = rng(hashStr(`${t.id}:${t.age ?? 0}:${t.tint ?? ""}:floor`) || 1);
+    const col = (hex, dl = 0) => paint(hex, t, { h: 0, l: dl, s: 0 });
+    const c = Object.assign((hex, dl) => col(hex, dl), { base: t.color, line: t.line ?? t.color, stone: t.stone ?? t.color, dark: t.dark ?? "#2f2c29", accent: t.accent ?? "#c9a14a" });
+    // the variation setting widens how far each piece's shade can drift
+    const v = (t.vary ?? 0.3) / 0.3;
+    const cv = Object.assign((hex, dl = 0) => col(hex, dl * v), c);
+    return `<pattern id="fl-${t.id}" width="${P}" height="${P}" patternUnits="userSpaceOnUse"><rect width="${P}" height="${P}" fill="${col(t.color)}"/>${ts.draw(r, cv, P)}</pattern>`;
+}
+
 /** Defs for a texture: VARIANTS symbols and the repeating tile `f-<id>` that scatters them */
 export function texturePattern(id, custom = {}) {
     const t = resolveTexture(id, custom) ?? { id, ...TEXTURES.void };
+    const layer = continuousLayer(t);
     const n = (t.vary ?? 0) === 0 && !(t.details ?? []).length && (t.age ?? 0) === 0 ? 1 : VARIANTS;
     let s = "";
     // bases first, then details for every square: details may spill over a square's edge onto its neighbours, hiding the seams
@@ -233,10 +387,11 @@ export function texturePattern(id, custom = {}) {
         let k = Math.floor(r() * n);
         if (n > 2) while (k === pick[(y * TILE) + x - 1] || k === pick[(y - 1) * TILE + x]) k = (k + 1) % n;
         pick[y * TILE + x] = k;
-        bases += use("fb", k, x, y);
+        if (!layer) bases += use("fb", k, x, y);
         overs += use("fv", k, x, y);
     }
-    return `${s}<pattern id="f-${id}" width="${TILE * CELL}" height="${TILE * CELL}" patternUnits="userSpaceOnUse">${bases}${overs}</pattern>`;
+    if (layer) bases = `<rect width="${TILE * CELL}" height="${TILE * CELL}" fill="url(#fl-${id})"/>`;
+    return `${s}${layer ?? ""}<pattern id="f-${id}" width="${TILE * CELL}" height="${TILE * CELL}" patternUnits="userSpaceOnUse">${bases}${overs}</pattern>`;
 }
 const patternCache = new Map();
 /** texturePattern, cached by the texture's definition */
@@ -257,6 +412,7 @@ export function textureTileSvg(id, custom = {}, scale = 1) {
 /** A small stand-alone SVG of a texture (n × n squares), for previews */
 export function texturePreview(id, custom = {}, n = 3) {
     const t = resolveTexture(id, custom) ?? { id, ...TEXTURES.void };
+    if (TILE_STRUCTURES[t.structure]) return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${n * 64} ${n * 64}" width="${n * 64}" height="${n * 64}"><defs>${texturePattern(id, custom)}</defs><rect width="${n * 64}" height="${n * 64}" fill="url(#f-${id})"/></svg>`;
     const parts = [];
     for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) parts.push([x, y, variantParts(t, (y * n + x * 7) % VARIANTS)]);
     const s = parts.map(([x, y, v]) => `<g transform="translate(${x * 64} ${y * 64})">${v.base}</g>`).join("") + parts.map(([x, y, v]) => `<g transform="translate(${x * 64} ${y * 64})">${v.over}</g>`).join("");
@@ -339,12 +495,16 @@ export function newMap(kind = "freeform", opts = {}) {
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
-/** Layers drawn in the current view: everything below the active layer (faded or solid) plus the active one; layers above are hidden */
+/**
+ * Layers drawn in the current view. current: only the active layer; faded / solid: the layers below it too (faded or not);
+ * all: every layer, above and below, solid (you still only edit the active one). Hidden layers never show.
+ */
 export function viewLayers(doc, { exportAll = false } = {}) {
     const i = Math.max(0, doc.layers.findIndex((l) => l.id === doc.active));
+    const all = exportAll || doc.view === "all";
     return doc.layers.map((l, j) => ({
         layer: l,
-        shown: !l.hidden && (exportAll || (j === i || (j < i && doc.view !== "current"))),
+        shown: !l.hidden && (all || (j === i || (j < i && doc.view !== "current"))),
         faded: !exportAll && j < i && doc.view === "faded",
         active: j === i,
     }));
@@ -829,13 +989,33 @@ export function layerParts(layer, ctx, region) {
         const [c, r] = k.split(",").map(Number);
         return (c + 1) * CELL >= region.x && c * CELL <= region.x + region.w && (r + 1) * CELL >= region.y && r * CELL <= region.y + region.h;
     })) : layer.floor;
-    // floor-level things (areas, ribbons, room floors), then what stands in rooms, then everything else
-    const low = objs.filter(isFloorLevel), high = objs.filter((o) => !isFloorLevel(o));
-    const markup = low.map((o) => (o.type === "room" ? roomSvg(o, ctx, "base") : objectSvg(o, ctx))).join("")
-        + low.filter((o) => o.type === "room").map((o) => roomSvg(o, ctx, "contents")).join("")
-        + high.map((o) => objectSvg(o, ctx)).join("");
+    // floor (area fills) > tracks and strips > rooms (floors, then what stands in them) > everything else
+    const of = (t) => objs.filter((o) => o.type === t);
+    const rooms = of("room");
+    const markup = of("area").map((o) => objectSvg(o, ctx)).join("")
+        + of("ribbon").map((o) => objectSvg(o, ctx)).join("")
+        + rooms.map((o) => roomSvg(o, ctx, "base")).join("") + rooms.map((o) => roomSvg(o, ctx, "contents")).join("")
+        + objs.filter((o) => !isFloorLevel(o)).map((o) => objectSvg(o, ctx)).join("");
     return { floor: floorSvg(floor), objects: markup };
 }
+/** Does a selection box {x, y, w, h} touch the object itself (lines, tracks and areas by their shape, not their bounds)? */
+export function touchesBox(o, box) {
+    const inBox = (p, pad = 0) => p[0] >= box.x - pad && p[0] <= box.x + box.w + pad && p[1] >= box.y - pad && p[1] <= box.y + box.h + pad;
+    if (o.type === "path" || o.type === "ribbon") {
+        const pad = o.type === "ribbon" ? ((o.cols ?? RIBBONS[o.style]?.cols ?? 2) * (o.box ?? CELL)) / 2 : Math.max(2, ...(PATH_STYLES[o.style]?.layers ?? [{ w: 4 }]).map((l) => l.w * (o.scale ?? 1))) / 2;
+        return sampleCurve(o.pts, o.smooth ?? PATH_STYLES[o.style]?.smooth ?? true, !!o.closed, 4).some((q) => inBox(q.p, pad));
+    }
+    if (o.type === "area") {
+        const poly = sampleCurve(o.pts, o.smooth ?? true, true, 6).map((q) => q.p);
+        if (poly.some((p) => inBox(p))) return true;
+        // the box may sit wholly inside the area
+        const inside = ([x, y]) => { let c = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) if ((poly[i][1] > y) !== (poly[j][1] > y) && x < ((poly[j][0] - poly[i][0]) * (y - poly[i][1])) / (poly[j][1] - poly[i][1] || 1e-9) + poly[i][0]) c = !c; return c; };
+        return inside([box.x, box.y]) || inside([box.x + box.w / 2, box.y + box.h / 2]);
+    }
+    const b = bounds(o);
+    return b.x < box.x + box.w && b.x + b.w > box.x && b.y < box.y + box.h && b.y + b.h > box.y;
+}
+
 /** Does an object show anywhere in a region {x, y, w, h}? (generous: rotation and stroke widths count) */
 export function visibleIn(o, region) {
     const b = bounds(o);

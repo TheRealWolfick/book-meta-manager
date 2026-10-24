@@ -9,13 +9,13 @@ import { api, toast, store, go, noteHref, openInDrawer, markDirty, Loading, Conf
 import {
     CELL, TERRAINS, BACKDROPS, PATH_STYLES, TEXT_STYLES, newMap, uid, viewLayers, layerSvg, backgroundSvg, gridSvg,
     textureCatalog, texturesDefs, texturePreview, resolveTexture, usedFloors, DETAILS, DETAIL_COLORS, detailRows, bounds, textureTileSvg, TILE_PX, moveObject, pathD, unitsPerPx, layerParts, objectSvg, sampleCurve, RIBBONS, RIBBON_PARTS,
-    toRoom, fromRoom, inRoom, anchorOf, rehome, ribbonPieces, roomBaseSvg, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg,
+    toRoom, fromRoom, inRoom, anchorOf, rehome, touchesBox, ribbonPieces, roomBaseSvg, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg,
 } from "./map-core.js";
 
 const html = htm.bind(h);
 // texture catalogue for menus (built-ins + derived textures); the editor refreshes it when the library loads
 let TEX = textureCatalog();
-const TEX_GROUPS = ["Outdoor", "Street", "Water", "Indoor", "Map", "My textures"];
+const TEX_GROUPS = ["Outdoor", "Street", "Water", "Indoor", "Roof", "Map", "My textures"];
 const texOptions = () => TEX_GROUPS.map((g) => html`<optgroup label=${g}>${Object.entries(TEX).filter(([, f]) => f.group === g).map(([k, f]) => html`<option value=${k}>${f.name}</option>`)}</optgroup>`);
 const mapHref = (p) => `#/map/${encodeURIComponent(p)}`;
 const linkName = (v) => String(v ?? "").replace(/^\[\[|\]\]$/g, "").split("|")[0];
@@ -147,7 +147,6 @@ function simplify(pts, tol) {
     return [...simplify(pts.slice(0, idx + 1), tol).slice(0, -1), ...simplify(pts.slice(idx), tol)];
 }
 const rotPt = ([x, y], [cx, cy], deg) => { const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a); return [cx + (x - cx) * c - (y - cy) * s, cy + (x - cx) * s + (y - cy) * c]; };
-const intersects = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
 // ------------------------------------------------------------------ page: load or create
 
@@ -381,7 +380,8 @@ function Editor({ data }) {
     const placeStamp = async (s, p, e) => {
         if (locked()) return;
         const pick = stampsFor(s)[Math.floor(Math.random() * stampsFor(s).length)];
-        const { w, h: hh } = await stampSize(pick, docRef.current);
+        const size0 = await stampSize(pick, docRef.current);
+        const k = opt.handScale ?? 1, w = size0.w * k, hh = size0.h * k;
         const { room, lp, B } = spaceAt(p);
         let x = lp[0] - w / 2, y = lp[1] - hh / 2;
         if (snapOn(e)) { x = Math.floor(lp[0] / B) * B; y = Math.floor(lp[1] / B) * B; }
@@ -849,7 +849,7 @@ function Editor({ data }) {
             case "box": {
                 const [a, b] = [dr.p0, p];
                 const r = { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(a[0] - b[0]), h: Math.abs(a[1] - b[1]) };
-                if (r.w > 2 || r.h > 2) setSel([...new Set([...dr.keep, ...active.objects.filter((o) => intersects(bounds(o), r)).map((o) => o.id)])]);
+                if (r.w > 2 || r.h > 2) setSel([...new Set([...dr.keep, ...active.objects.filter((o) => touchesBox(o, r)).map((o) => o.id)])]);
                 setGhost(null);
                 break;
             }
@@ -972,6 +972,8 @@ function Editor({ data }) {
             if (e.key === "[" || e.key === "]") { order(e.key === "]" ? "up" : "down"); return; }
             // holding a stamp: Q / E turn it in the hand (10°, Shift 90°) instead of switching tools
             if (tool === "stamp" && (k === "q" || k === "e")) { setO({ handRot: ((((opt.handRot ?? 0) + (k === "e" ? 1 : -1) * (e.shiftKey ? 90 : 10)) % 360) + 360) % 360 }); return; }
+            // and Z / X make it smaller or larger (10% a press, Shift: 50%)
+            if (tool === "stamp" && (k === "z" || k === "x")) { const f = e.shiftKey ? 1.5 : 1.1; setO({ handScale: Math.round(Math.max(0.1, Math.min(10, (opt.handScale ?? 1) * (k === "x" ? f : 1 / f))) * 1000) / 1000 }); return; }
             if (e.key === "+" || e.key === "=") { zoomAt(1.25); return; }
             if (e.key === "-") { zoomAt(0.8); return; }
             if (e.key === "0") { fit(); return; }
@@ -1196,8 +1198,9 @@ function Editor({ data }) {
         if (hover && tool === "stamp" && opt.stamp && !dragRef.current) {
             const a = aspects.get(stampSrc(opt.stamp));
             const s = opt.stamp;
-            const w = grid ? (Array.isArray(s.cells) ? s.cells[0] : s.cells ?? Math.max(1, Math.round((s.w ?? 48) / 40))) * CELL : Array.isArray(s.cells) ? s.cells[0] * 22 : s.w ?? 48;
-            const hh = Array.isArray(s.cells) ? (grid ? s.cells[1] * CELL : s.cells[1] * 22) : w * (a ?? 1);
+            const w0 = grid ? (Array.isArray(s.cells) ? s.cells[0] : s.cells ?? Math.max(1, Math.round((s.w ?? 48) / 40))) * CELL : Array.isArray(s.cells) ? s.cells[0] * 22 : s.w ?? 48;
+            const hh0 = Array.isArray(s.cells) ? (grid ? s.cells[1] * CELL : s.cells[1] * 22) : w0 * (a ?? 1);
+            const hk = opt.handScale ?? 1, w = w0 * hk, hh = hh0 * hk;
             // the preview sits the way it will land: in a room it takes the room's angle and grid
             const { room, lp, B } = spaceAt(hover);
             let x = snapOn() ? Math.floor(lp[0] / B) * B : lp[0] - w / 2, y = snapOn() ? Math.floor(lp[1] / B) * B : lp[1] - hh / 2;
@@ -1241,7 +1244,7 @@ function Editor({ data }) {
             <b class="map-title">${loc.title}</b>${loc.scale && html`<span class="badge">${loc.scale}</span>`}
             <span class="badge">${grid ? `square grid · 1 square = ${doc.units.amount} ${doc.units.unit}` : "freeform"}</span>
             <div class="seg" role="group" aria-label="Layer view">
-                ${[["current", "This layer"], ["faded", "Below faded"], ["solid", "Below solid"]].map(([k, l]) => html`<button class=${doc.view === k ? "on" : ""} aria-pressed=${doc.view === k} onClick=${() => commit({ ...doc, view: k })} title="Which layers below the current one show">${l}</button>`)}
+                ${[["current", "This layer"], ["faded", "Below faded"], ["solid", "Below solid"], ["all", "All solid"]].map(([k, l]) => html`<button class=${doc.view === k ? "on" : ""} aria-pressed=${doc.view === k} onClick=${() => commit({ ...doc, view: k })} title="Which layers below the current one show">${l}</button>`)}
             </div>
             ${grid && html`<button class=${`snap-toggle ${doc.snap ? "on" : ""}`} aria-pressed=${doc.snap} title="Snap to the grid (hold Alt to place freely once)" onClick=${() => commit({ ...doc, snap: !doc.snap })}>Snap ${doc.snap ? "on" : "off"}</button>`}
             <span class="grow" />
@@ -1318,7 +1321,8 @@ function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data }) {
         stamp: html`<span>${opt.stamp ? html`<b>${opt.stamp.name}</b>` : html`<span class="muted">Pick a stamp in the library</span>`}</span>
             <label class="row"><input type="checkbox" checked=${opt.vary} onChange=${(e) => setO({ vary: e.target.checked })} /> Vary (random from the same set)</label>
             <span class="row">Angle <b>${opt.handRot ?? 0}°</b> <button class="small" onClick=${() => setO({ handRot: 0 })} disabled=${!opt.handRot}>Reset</button></span>
-            <span class="muted">Q / E rotate (Shift: 90°). Click to place${grid ? ", snapped to the grid (Alt: free)" : ""}; right-click to put it down.</span>`,
+            <span class="row">Size <b>${Math.round((opt.handScale ?? 1) * 100)}%</b> <button class="small" onClick=${() => setO({ handScale: 1 })} disabled=${(opt.handScale ?? 1) === 1}>Reset</button></span>
+            <span class="muted">Q / E rotate (Shift: 90°), Z / X smaller / larger (Shift: more). Click to place${grid ? ", snapped to the grid (Alt: free)" : ""}; right-click to put it down.</span>`,
         scatter: html`<span>${opt.stamp ? html`<b>${opt.stamp.name}</b>` : html`<span class="muted">Pick a stamp</span>`}</span>
             <label class="row"><input type="checkbox" checked=${opt.vary} onChange=${(e) => setO({ vary: e.target.checked })} /> Vary</label>
             <label class="row">Radius <input type="range" min="10" max="300" value=${opt.radius} onInput=${(e) => setO({ radius: +e.target.value })} /></label>
@@ -1625,8 +1629,8 @@ function LayersPanel({ doc, commit, setSel }) {
     const add = () => { const id = uid(); const i = doc.layers.findIndex((l) => l.id === doc.active); const ls = [...doc.layers]; ls.splice(i + 1, 0, { id, name: `Layer ${doc.layers.length + 1}`, objects: [], floor: {} }); commit({ ...doc, layers: ls, active: id }); setSel([]); };
     const remove = (id) => { const ls = doc.layers.filter((l) => l.id !== id); commit({ ...doc, layers: ls, active: doc.active === id ? ls.at(-1).id : doc.active }); setSel([]); };
     return html`<div class="layers-panel">
-        <div class="seg" role="group" aria-label="Layer view">${[["current", "Only this layer"], ["faded", "Below faded"], ["solid", "Below solid"]].map(([k, l]) => html`<button class=${doc.view === k ? "on" : ""} aria-pressed=${doc.view === k} onClick=${() => commit({ ...doc, view: k })}>${l}</button>`)}</div>
-        <p class="muted small-note">Layers above the one you're on are hidden. Saving keeps this view, so the map shows the same way in Obsidian.</p>
+        <div class="seg" role="group" aria-label="Layer view">${[["current", "Only this layer"], ["faded", "Below faded"], ["solid", "Below solid"], ["all", "All solid"]].map(([k, l]) => html`<button class=${doc.view === k ? "on" : ""} aria-pressed=${doc.view === k} onClick=${() => commit({ ...doc, view: k })}>${l}</button>`)}</div>
+        <p class="muted small-note">${doc.view === "all" ? "Every layer shows; you only edit the one you're on." : "Layers above the one you're on are hidden."} Saving keeps this view, so the map shows the same way in Obsidian.</p>
         ${[...doc.layers].map((l, i) => ({ l, i })).reverse().map(({ l, i }) => html`<div class=${`layer-row ${l.id === doc.active ? "on" : ""}`} key=${l.id}>
             <button class="layer-name" onClick=${() => { commit({ ...doc, active: l.id }); setSel([]); }} onDblClick=${() => { const n = prompt("Layer name", l.name); if (n?.trim()) set(l.id, { name: n.trim() }); }} title="Click to work on this layer, double-click to rename">
                 ${l.name} <span class="muted">${l.objects.length + Object.keys(l.floor ?? {}).length ? `${l.objects.length} items${Object.keys(l.floor ?? {}).length ? `, ${Object.keys(l.floor).length} squares` : ""}` : "empty"}</span></button>
