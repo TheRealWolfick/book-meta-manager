@@ -126,6 +126,10 @@ The tests copy the vault (the one given as an argument, `BOOKS_VAULT`, or the in
 
 The code has no build step: `server.js` (node:http) with modules in `lib/`, and a Preact + htm front end in `public/` served as-is. `CLAUDE.md` describes the conventions, the API and the internals in detail. `node scripts/build-stamps.js` regenerates the stamp library in `public/stamps/`.
 
+## Licence
+
+The code is released under the [MIT License](LICENSE). The bundled map stamps keep their own licences, listed below.
+
 ## Credits
 
 The map stamps come from [Azgaar's Fantasy Map Generator](https://github.com/Azgaar/Fantasy-Map-Generator) (MIT), [Kenney](https://kenney.nl) (CC0), and [game-icons.net](https://game-icons.net) (CC BY 3.0; credit them if you publish maps that use those icons); the steampunk, plant and pipework stamps are drawn by `scripts/build-stamps.js`. Details in [`public/stamps/CREDITS.md`](public/stamps/CREDITS.md). The heading font Newsreader is under the SIL Open Font License.

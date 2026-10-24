@@ -18,5 +18,10 @@
   },
   "devDependencies": {
     "jsdom": "26.1.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TheRealWolfick/book-meta-manager.git"
   }
 }
