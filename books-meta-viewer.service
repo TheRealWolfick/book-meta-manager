@@ -1,11 +1,17 @@
+# systemd user unit. Install with scripts/install-service.sh --vault <folder>, which fills in the settings below
+# for this device (vault folder, port, host), this repo's location and this machine's node.
 [Unit]
 Description=Books Meta Viewer (Obsidian data store and ledgers)
 After=default.target
 
 [Service]
 Type=simple
+# service settings: the Obsidian vault folder, and where the app listens
+Environment=BOOKS_VAULT=%h/Documents/Obsidian/books
+Environment=PORT=4321
+Environment=BOOKS_HOST=127.0.0.1
 WorkingDirectory=%h/Projects/books-meta-viewer
-ExecStart=/usr/bin/node server.js --vault %h/Documents/Obsidian/books --port 4321 --host 127.0.0.1
+ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=3
 

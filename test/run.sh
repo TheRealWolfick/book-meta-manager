@@ -1,9 +1,11 @@
 #!/bin/sh
 # Smoke test against a throwaway copy of the vault (never the real one).
-# Usage: sh test/run.sh [vault path]   (default ~/Documents/Obsidian/books)
+# Usage: sh test/run.sh [vault path]   (default: BOOKS_VAULT, else the installed service's vault folder)
 set -e
 cd "$(dirname "$0")/.."
-VAULT="${1:-$HOME/Documents/Obsidian/books}"
+UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/books-meta-viewer.service"
+VAULT="${1:-${BOOKS_VAULT:-$( [ -f "$UNIT" ] && sed -n 's/^Environment=BOOKS_VAULT=//p' "$UNIT" | tail -1 )}}"
+[ -n "$VAULT" ] && [ -d "$VAULT" ] || { echo "No vault to copy: pass a path, set BOOKS_VAULT, or install the service" >&2; exit 1; }
 COPY="$(mktemp -d)"
 trap 'kill $PID 2>/dev/null; rm -rf "$COPY"' EXIT
 (cd "$VAULT" && tar --exclude=./.git --exclude=./.obsidian -cf - .) | (cd "$COPY" && tar -xf -)

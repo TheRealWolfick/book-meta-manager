@@ -20,9 +20,19 @@ import { foldStock } from "./lib/ledger.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const arg = (name, def) => { const i = process.argv.indexOf(`--${name}`); return i > -1 ? process.argv[i + 1] : def; };
-const VAULT = path.resolve(arg("vault", process.env.BOOKS_VAULT ?? path.join(process.env.HOME, "Documents/Obsidian/books")));
+// the vault folder comes from the service settings (BOOKS_VAULT in the systemd unit) or --vault
+const VAULT_ARG = arg("vault", process.env.BOOKS_VAULT);
+if (!VAULT_ARG) {
+    console.error("No vault folder given. Set BOOKS_VAULT in the service settings (sh scripts/install-service.sh --vault <folder>) or pass --vault <folder>.");
+    process.exit(1);
+}
+const VAULT = path.resolve(VAULT_ARG.replace(/^~(?=\/)/, process.env.HOME));
 const PORT = Number(arg("port", process.env.PORT ?? 4321));
-const HOST = arg("host", "127.0.0.1");
+const HOST = arg("host", process.env.BOOKS_HOST || "127.0.0.1");
+if (!fs.existsSync(VAULT) || !fs.statSync(VAULT).isDirectory()) {
+    console.error(`Vault folder not found: ${VAULT}\nChange it in the service settings (sh scripts/install-service.sh --vault <folder>) or pass --vault <folder>.`);
+    process.exit(1);
+}
 
 const vault = new Vault(VAULT);
 const novels = new Novels(vault);

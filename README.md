@@ -12,7 +12,7 @@ npm start                      # http://127.0.0.1:4321
 node server.js --vault /path/to/vault --port 4321 --host 127.0.0.1
 ```
 
-`BOOKS_VAULT` and `PORT` environment variables work too. It listens on localhost only by default.
+`BOOKS_VAULT`, `PORT` and `BOOKS_HOST` environment variables work too. There is no default vault folder. It listens on localhost only by default.
 
 ## What it does
 
@@ -35,4 +35,10 @@ Copies the vault to a temporary folder, starts the server against the copy, rend
 
 ## systemd (user service)
 
-See `CLAUDE.md` → "Running as a service" (unit file: `books-meta-viewer.service`).
+Install or update the service on a device, with that device's vault folder:
+
+```sh
+sh scripts/install-service.sh --vault /path/to/Obsidian/books
+```
+
+The vault folder, port and host are settings in the installed unit (`~/.config/systemd/user/books-meta-viewer.service`). See `CLAUDE.md` → "Running as a service".
