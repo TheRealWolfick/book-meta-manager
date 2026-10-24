@@ -400,6 +400,28 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         const ta = doc.querySelector(".inspector textarea");
         ta.value = "Gas leak here"; ta.dispatchEvent(new w.Event("input", { bubbles: true }));
         await wait(200);
+        // choices open a modal: a click picks, Confirm applies, and the keyboard goes back to the map
+        {
+            doc.querySelector(".tool-rail [aria-label^='Line']").click(); await wait(100);
+            const pick = () => doc.querySelector("button.pick[aria-label^='Line style']");
+            const before = pick()?.getAttribute("aria-label");
+            pick().click(); await wait(150);
+            const modal = doc.querySelector(".pick-modal");
+            const other = [...(modal?.querySelectorAll(".pick-opt") ?? [])].find((b) => !b.classList.contains("current"));
+            other?.click(); await wait(50);
+            button("Confirm", modal).click(); await wait(200);
+            check(!!modal && !doc.querySelector(".pick-modal") && pick().getAttribute("aria-label") !== before && pick().textContent.includes(other.textContent.trim()),
+                "a line style is chosen in a modal and applied on Confirm", `${before} -> ${pick()?.getAttribute("aria-label")}`);
+            await wait(50);
+            check(doc.activeElement === doc.querySelector(".map-canvas"), "after choosing, the keyboard is back on the map", doc.activeElement?.outerHTML.slice(0, 80));
+            pick().click(); await wait(150);
+            const third = [...doc.querySelectorAll(".pick-modal .pick-opt")].find((b) => !b.classList.contains("current"));
+            third.dispatchEvent(new w.MouseEvent("dblclick", { bubbles: true })); await wait(150);
+            check(!doc.querySelector(".pick-modal") && pick().textContent.includes(third.textContent.trim()), "a double click chooses at once");
+            pick().click(); await wait(150);
+            doc.querySelector(".pick-modal").dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await wait(150);
+            check(!doc.querySelector(".pick-modal") && pick().textContent.includes(third.textContent.trim()), "Escape closes it without changing anything");
+        }
         // erase floor, a room holding a stamp, a curved strip, snapping off
         doc.querySelector(".tool-rail [aria-label='Erase floor']").click(); await wait(100);
         fireEv(svg, "pointerdown", at(100, 300)); fireEv(svg, "pointerup", at(100, 300)); await wait(150);
@@ -450,6 +472,35 @@ const check = (ok, label, detail = "") => { if (!ok) failed++; console.log(`${ok
         [...doc.querySelectorAll(".stamp-tile")].find((t) => t.title.startsWith("Copper straight"))?.click(); await wait(100);
         fireEv(svg, "pointerdown", at(120, 220)); fireEv(svg, "pointerup", at(120, 220)); await wait(200);
         fireEv(svg, "pointermove", at(143, 223)); fireEv(svg, "pointerdown", at(143, 223)); fireEv(svg, "pointerup", at(143, 223)); await wait(200);
+        // a room drawn inside a room goes in it; dragged out it stands on the map, dragged back it goes in again
+        {
+            await saveNow();
+            const objs = () => JSON.parse(fs.readFileSync(mapFile, "utf8").match(/<!\[CDATA\[([\s\S]*?)\]\]><\/metadata>/)[1]).layers[0].objects;
+            const outer = objs().find((o) => o.type === "room" && o.children?.some((c) => c.src?.includes("crate")));
+            const crate = outer.children.find((c) => c.src?.includes("crate"));
+            // the inner room goes in the half of the outer room away from the crate
+            const left = crate.x + crate.w / 2 > outer.w / 2;
+            const [u0, u1] = left ? [0.1, 0.35] : [0.65, 0.9];
+            const vb = svg.getAttribute("viewBox").split(" ").map(Number), k = 800 / vb[2];
+            const scr = ([x, y]) => at((x - vb[0]) * k, (y - vb[1]) * k);
+            const mapPt = (u, q) => [outer.x + outer.w * u, outer.y + outer.h * q];
+            toolBtn("Room: floor + walls").click(); await wait(100);
+            fireEv(svg, "pointerdown", scr(mapPt(u0, 0.2))); fireEv(svg, "pointermove", scr(mapPt(u1, 0.6))); fireEv(svg, "pointerup", scr(mapPt(u1, 0.6))); await wait(300);
+            await saveNow();
+            const inner = objs().find((o) => o.id === outer.id)?.children?.find((c) => c.type === "room");
+            check(!!inner && !objs().some((o) => o.id === inner.id), "a room drawn inside a room goes in it", JSON.stringify(objs().find((o) => o.id === outer.id)?.children?.map((c) => c.type)));
+            toolBtn("Select").click(); await wait(100);
+            const drag = async (from, to) => {
+                const el = doc.querySelector(`.layer-active g[data-id="${inner.id}"]`);
+                fireEv(el, "pointerdown", scr(from)); fireEv(svg, "pointermove", scr(to)); fireEv(svg, "pointerup", scr(to)); await wait(200);
+                await saveNow();
+            };
+            const mid = mapPt((u0 + u1) / 2, 0.4), away = [outer.x - outer.w * 1.5, outer.y + outer.h * 0.4];
+            await drag(mid, away);
+            check(objs().some((o) => o.id === inner.id) && !objs().find((o) => o.id === outer.id)?.children?.some((c) => c.id === inner.id), "dragged out of its room, a room stands on the map");
+            await drag(away, mid);
+            check(objs().find((o) => o.id === outer.id)?.children?.some((c) => c.id === inner.id) && !objs().some((o) => o.id === inner.id), "dragged back in, it goes inside the room again");
+        }
         button("Layers").click(); await wait(200);
         button("+ Layer above the current one").click(); await wait(200);
         button("Only this layer", doc.querySelector(".layers-panel")).click(); await wait(200);

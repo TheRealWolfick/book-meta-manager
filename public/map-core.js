@@ -431,10 +431,34 @@ export function macroBlobs(x, y, w, h) {
     }
     return out;
 }
-export function macroSvg(x, y, w, h) {
-    return macroBlobs(x, y, w, h).map((b) => `<ellipse cx="${n1(b.cx)}" cy="${n1(b.cy)}" rx="${n1(b.rx)}" ry="${n1(b.ry)}" transform="rotate(${b.rot} ${n1(b.cx)} ${n1(b.cy)})" fill="url(#mg${b.dark ? "d" : "l"})"/>`).join("");
+/** k: patchStrength of the floor underneath */
+export function macroSvg(x, y, w, h, k = { light: 1, dark: 1 }) {
+    return macroBlobs(x, y, w, h).map((b) => {
+        const a = b.dark ? k.dark : k.light;
+        if (a <= 0) return "";
+        return `<ellipse cx="${n1(b.cx)}" cy="${n1(b.cy)}" rx="${n1(b.rx)}" ry="${n1(b.ry)}" transform="rotate(${b.rot} ${n1(b.cx)} ${n1(b.cy)})" fill="url(#mg${b.dark ? "d" : "l"})"${a !== 1 ? ` opacity="${+a.toFixed(3)}"` : ""}/>`;
+    }).join("");
 }
 export const MACRO_ALPHA = { light: 0.055, dark: 0.06 };
+const strengthCache = new Map();
+/**
+ * How strong a floor's patches are ({light, dark}, multipliers of MACRO_ALPHA). Light patches fade on dark floors:
+ * on near-black even a faint light patch reads as a glow, so Darkness keeps only a trace. A texture's `patches`
+ * (a number) multiplies both.
+ */
+export function patchStrength(id, custom = {}) {
+    const key = `${id}|${JSON.stringify(custom?.[id] ?? null)}`;
+    if (strengthCache.has(key)) return strengthCache.get(key);
+    const t = resolveTexture(id, custom);
+    let hex = /^#[0-9a-f]{3,6}$/i.test(t?.color ?? "") ? t.color : "#808080";
+    if (hex.length === 4) hex = `#${[...hex.slice(1)].map((c) => c + c).join("")}`;
+    const [r, g, b] = hexRgb(hex).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const m = typeof t?.patches === "number" ? t.patches : 1;
+    const out = { light: m * Math.min(1, Math.max(0.12, lum / 0.12)), dark: m };
+    strengthCache.set(key, out);
+    return out;
+}
 
 // ---- for drawing floors on a canvas (the editor): sprite sheets of a texture's variations
 /** which variation a square shows: (c, r, floorId) -> {k, n, cont} */
@@ -470,14 +494,21 @@ export function paintedFloorSvg(entries, custom = {}, clipId = "pf") {
     const cells = entries.map(([k, f]) => { const [c, r] = k.split(",").map(Number); return [c, r, f]; });
     const xs = cells.map((q) => q[0]), ys = cells.map((q) => q[1]);
     const box = { x: Math.min(...xs) * CELL, y: Math.min(...ys) * CELL, w: (Math.max(...xs) - Math.min(...xs) + 1) * CELL, h: (Math.max(...ys) - Math.min(...ys) + 1) * CELL };
-    const clip = cells.map(([c, r]) => `M${c * CELL} ${r * CELL}h${CELL}v${CELL}h-${CELL}z`).join("");
-    return `<clipPath id="${clipId}"><path d="${clip}"/></clipPath>${floorCellsSvg(cells, custom, CELL, clipId)}<g clip-path="url(#${clipId})">${macroSvg(box.x, box.y, box.w, box.h)}</g>`;
+    const sq = (list) => list.map(([c, r]) => `M${c * CELL} ${r * CELL}h${CELL}v${CELL}h-${CELL}z`).join("");
+    // patches per floor, as strong as that floor allows
+    const byFloor = new Map();
+    for (const q of cells) { if (!byFloor.has(q[2])) byFloor.set(q[2], []); byFloor.get(q[2]).push(q); }
+    const patches = [...byFloor].map(([f, list], i) => {
+        const id = `${clipId}-${i}`;
+        return `<clipPath id="${id}"><path d="${sq(list)}"/></clipPath><g clip-path="url(#${id})">${macroSvg(box.x, box.y, box.w, box.h, patchStrength(f, custom))}</g>`;
+    }).join("");
+    return `<clipPath id="${clipId}"><path d="${sq(cells)}"/></clipPath>${floorCellsSvg(cells, custom, CELL, clipId)}${patches}`;
 }
 /** The terrain of a grid map (or backdrop of a freeform map) square by square over {x, y, w, h}, with patches */
 export function terrainCellsSvg(floorId, x, y, w, h, custom = {}) {
     const cells = [];
     for (let r = Math.floor(y / CELL); r < Math.ceil((y + h) / CELL); r++) for (let c = Math.floor(x / CELL); c < Math.ceil((x + w) / CELL); c++) cells.push([c, r, floorId]);
-    return floorCellsSvg(cells, custom) + macroSvg(x, y, w, h);
+    return floorCellsSvg(cells, custom) + macroSvg(x, y, w, h, patchStrength(floorId, custom));
 }
 
 const patternCache = new Map();
@@ -871,24 +902,32 @@ export function floorSvg(floor, size = CELL, fill = (f) => `url(#f-${esc(f)})`) 
 
 /** Floor-like objects (area fills, ribbons, rooms) sit with the painted floor, below everything else on their layer */
 export const isFloorLevel = (o) => o.type === "area" || o.type === "ribbon" || o.type === "room";
-const floorFirst = (objs) => [...objs.filter(isFloorLevel), ...objs.filter((o) => !isFloorLevel(o))];
 
 /**
  * A room: a box with its own floor, grid (box size `box`) and walls, holding child objects in its own coordinates
  * (0..w, 0..h). It rotates about its centre, and everything inside turns with it.
  */
 export function roomSvg(o, ctx, part = "all") {
+    if (part === "all") return roomSvg(o, ctx, "base") + roomSvg(o, ctx, "contents");
     const cx = o.w / 2, cy = o.h / 2;
     const tf = `translate(${n1(o.x)} ${n1(o.y)})${o.rot ? ` rotate(${n1(o.rot)} ${n1(cx)} ${n1(cy)})` : ""}`;
-    // contents are drawn in a second pass (after every room's floor), so a neighbouring room never covers them
-    if (part === "contents") return (o.children ?? []).length ? `<g transform="${tf}">${floorFirst(o.children).map((c) => objectSvg(c, ctx)).join("")}</g>` : "";
+    // contents are drawn in a second pass (after every room's floor), so a neighbouring room never covers them;
+    // rooms inside a room do the same among themselves: their floors, then what stands in them, then the rest
+    if (part === "contents") {
+        const kids = o.children ?? [];
+        if (!kids.length) return "";
+        const rooms = kids.filter((c) => c.type === "room");
+        const inner = kids.filter((c) => c.type !== "room" && isFloorLevel(c)).map((c) => objectSvg(c, ctx)).join("")
+            + rooms.map((c) => roomSvg(c, ctx, "base")).join("") + rooms.map((c) => roomSvg(c, ctx, "contents")).join("")
+            + kids.filter((c) => !isFloorLevel(c)).map((c) => objectSvg(c, ctx)).join("");
+        return `<g transform="${tf}">${inner}</g>`;
+    }
     // the editor draws a room's floor, painted squares, grid and walls from bitmaps once they are ready
     const img = ctx.roomImage?.(o);
     let s, outline;
     if (img) { s = img; outline = (o.shapes ?? []).some((sh) => sh.op !== "open") ? roomOutline(o).d : `M0 0H${n1(o.w)}V${n1(o.h)}H0Z`; }
     else { const base = roomBase(o); s = `${base.defs ? `<defs>${base.defs}</defs>` : ""}${base.body}`; outline = base.outline; }
     if (ctx.edit) s += `<path d="${outline}" fill="transparent" stroke="none" pointer-events="all"/>`;
-    if (part === "all") s += floorFirst(o.children ?? []).map((c) => objectSvg(c, ctx)).join("");
     return `<g${ctx.edit ? ` data-id="${esc(o.id)}"` : ""} transform="${tf}">${s}</g>`;
 }
 
@@ -1056,10 +1095,21 @@ export function fromRoom(room, [x, y]) {
     return [p[0] + room.x, p[1] + room.y];
 }
 export const inRoom = (room, p) => roomInside(room, toRoom(room, p));
+/**
+ * A room inside other rooms as seen on the map: the same room with x, y and rot combined with the room around it
+ * (`parent`, itself already on the map, or null), so toRoom / fromRoom / inRoom work at any depth.
+ */
+export function worldRoom(room, parent) {
+    if (!parent) return room;
+    const c = fromRoom(parent, [room.x + room.w / 2, room.y + room.h / 2]);
+    return { ...room, x: c[0] - room.w / 2, y: c[1] - room.h / 2, rot: ((((parent.rot ?? 0) + (room.rot ?? 0)) % 360) + 360) % 360 };
+}
+/** every object of a list, with the things inside rooms (at any depth) */
+export const allObjects = (objs) => (objs ?? []).flatMap((o) => (o.type === "room" ? [o, ...allObjects(o.children)] : [o]));
 
 /** Anchor point of an object (where it "is" when deciding which room holds it) */
 export function anchorOf(o) {
-    if (o.type === "stamp") return [o.x + o.w / 2, o.y + o.h / 2];
+    if (o.type === "stamp" || o.type === "room") return [o.x + o.w / 2, o.y + o.h / 2];
     if (o.pts) { const b = bounds(o); return [b.x + b.w / 2, b.y + b.h / 2]; }
     return [o.x, o.y];
 }
@@ -1068,7 +1118,8 @@ export function rehome(o, from, to) {
     const conv = (p) => { const w = from ? fromRoom(from, p) : p; return to ? toRoom(to, w) : w; };
     const dRot = (from?.rot ?? 0) - (to?.rot ?? 0);
     if (o.pts) return { ...o, pts: o.pts.map(conv) };
-    if (o.type === "stamp") { const c = conv([o.x + o.w / 2, o.y + o.h / 2]); return { ...o, x: c[0] - o.w / 2, y: c[1] - o.h / 2, rot: (((o.rot ?? 0) + dRot) % 360 + 360) % 360 || undefined }; }
+    // stamps and rooms turn about their centre (a room's contents stay in its own coordinates and come along)
+    if (o.type === "stamp" || o.type === "room") { const c = conv([o.x + o.w / 2, o.y + o.h / 2]); return { ...o, x: c[0] - o.w / 2, y: c[1] - o.h / 2, rot: (((o.rot ?? 0) + dRot) % 360 + 360) % 360 || undefined }; }
     const c = conv([o.x, o.y]);
     return { ...o, x: c[0], y: c[1], ...(o.type === "text" ? { rot: (((o.rot ?? 0) + dRot) % 360 + 360) % 360 || undefined } : {}) };
 }
@@ -1125,7 +1176,7 @@ export function usedFloors(doc, custom = doc.textures) {
     const s = new Set([doc.kind === "grid" ? TERRAINS[doc.terrain]?.floor ?? "void" : doc.backdrop ?? "parchment"]);
     for (const l of doc.layers) {
         for (const f of Object.values(l.floor ?? {})) s.add(f);
-        for (const o of l.objects.flatMap((x) => (x.type === "room" ? [x, ...(x.children ?? [])] : [x]))) {
+        for (const o of allObjects(l.objects)) {
             if (o.type === "room") { if (o.floor) s.add(o.floor); for (const f of Object.values(o.cells ?? {})) s.add(f); }
             if (o.type === "area") s.add(o.fill ?? "parchment");
             if (o.type === "ribbon") { const f = o.floor === undefined ? RIBBONS[o.style]?.floor : o.floor; if (f) s.add(f); }

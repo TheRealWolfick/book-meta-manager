@@ -11,14 +11,79 @@ import {
     CELL, TERRAINS, BACKDROPS, PATH_STYLES, TEXT_STYLES, newMap, uid, viewLayers, layerSvg, backgroundSvg, gridSvg,
     textureCatalog, texturesDefs, texturePreview, resolveTexture, usedFloors, DETAILS, DETAIL_COLORS, detailRows, bounds, textureTileSvg, TILE_PX,
     floorSvg, moveObject, pathD, unitsPerPx, layerParts, objectSvg, sampleCurve, RIBBONS, RIBBON_PARTS,
-    toRoom, fromRoom, inRoom, anchorOf, rehome, touchesBox, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg,
+    toRoom, fromRoom, inRoom, worldRoom, allObjects, anchorOf, rehome, touchesBox, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg,
 } from "./map-core.js";
 
 const html = htm.bind(h);
 // texture catalogue for menus (built-ins + derived textures); the editor refreshes it when the library loads
 let TEX = textureCatalog();
 const TEX_GROUPS = ["Outdoor", "Street", "Water", "Indoor", "Roof", "Map", "My textures"];
-const texOptions = () => TEX_GROUPS.map((g) => html`<optgroup label=${g}>${Object.entries(TEX).filter(([, f]) => f.group === g).map(([k, f]) => html`<option value=${k}>${f.name}</option>`)}</optgroup>`);
+let TEX_CUSTOM = {}; // the derived textures TEX was made from (for previews)
+
+// ------------------------------------------------------------------ pickers
+// Choices open a modal instead of a <select>: a focused select changes when you pan with WASD. In the modal a click
+// picks, Confirm or a double click applies, Escape cancels; then focus goes back to the map (or to the button, inside
+// another dialog). Options: [{value, label, group?, img? (url), svg? (markup)}]
+let focusCanvas = null; // set by the map editor
+const texChoices = (lead = []) => [...lead, ...TEX_GROUPS.flatMap((g) => Object.entries(TEX).filter(([, f]) => f.group === g).map(([k, f]) => ({ value: k, label: f.name, group: g, img: texPreviewUrl(k, TEX_CUSTOM) })))];
+/** a small drawing of a line style */
+const strokeSvg = (st) => (st ? `<svg viewBox="0 0 120 28" width="120" height="28">${st.layers.map((l) => `<path d="M6 20C34 4 70 26 114 9" fill="none" stroke="${l.c}" stroke-width="${Math.min(l.w, 14)}"${l.dash ? ` stroke-dasharray="${l.dash}"` : ""} stroke-linecap="${l.cap ?? "butt"}"${l.opacity ? ` opacity="${l.opacity}"` : ""}/>`).join("")}</svg>` : "");
+const styleChoices = (styles, lead = []) => [...lead, ...styles.map(([k, st]) => ({ value: k, label: st.name, svg: strokeSvg(st) }))];
+const plainChoices = (pairs) => pairs.map(([value, label]) => ({ value, label }));
+
+function Pick({ value, options, onChange, label, placeholder }) {
+    const [open, setOpen] = useState(false);
+    const btn = useRef();
+    const cur = options.find((o) => String(o.value) === String(value));
+    const close = () => {
+        setOpen(false);
+        // back to the map so WASD pans; inside another dialog, back to this button
+        setTimeout(() => (btn.current?.closest(".modal") || !focusCanvas ? btn.current?.focus() : focusCanvas()));
+    };
+    return html`<button type="button" class="pick" ref=${btn} aria-haspopup="dialog" aria-label=${label ? `${label}: ${cur?.label ?? placeholder ?? "none"}` : undefined} onClick=${() => setOpen(true)}>
+            ${cur?.img && html`<img src=${cur.img} alt="" />`}<span>${cur?.label ?? placeholder ?? "Choose…"}</span><span class="pick-caret" aria-hidden="true">▾</span>
+        </button>
+        ${open && html`<${PickModal} value=${value} options=${options} label=${label} onClose=${close} onPick=${(v) => { close(); if (String(v) !== String(value)) onChange(v); }} />`}`;
+}
+function PickModal({ value, options, label, onClose, onPick }) {
+    const [pending, setPending] = useState(value);
+    const [q, setQ] = useState("");
+    const box = useRef();
+    const t = q.trim().toLowerCase();
+    const shown = options.filter((o) => !t || o.label.toLowerCase().includes(t) || (o.group ?? "").toLowerCase().includes(t));
+    const groups = [...new Set(shown.map((o) => o.group ?? ""))];
+    const many = options.length > 12, tiles = options.some((o) => o.img || o.svg);
+    useEffect(() => { (box.current?.querySelector(".pick-search") ?? box.current?.querySelector(".pick-opt.on") ?? box.current)?.focus(); }, []);
+    useEffect(() => { box.current?.querySelector(".pick-opt.on")?.scrollIntoView?.({ block: "nearest" }); }, [pending]);
+    const key = (e) => {
+        e.stopPropagation(); // the editor's shortcuts stay quiet while choosing
+        if (e.key === "Escape") { e.preventDefault(); onClose(); }
+        else if (e.key === "Enter") { e.preventDefault(); if (shown.some((o) => String(o.value) === String(pending))) onPick(pending); else if (shown.length === 1) onPick(shown[0].value); }
+        else if (["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(e.key) && shown.length) {
+            e.preventDefault();
+            const i = shown.findIndex((o) => String(o.value) === String(pending));
+            const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : -1;
+            setPending(shown[Math.max(0, Math.min(shown.length - 1, (i < 0 ? 0 : i + step)))].value);
+        }
+    };
+    return html`<div class="modal-back pick-back" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+        <div class="modal pick-modal" role="dialog" aria-label=${label ?? "Choose"} tabindex="-1" ref=${box} onKeyDown=${key}>
+            <h3>${label ?? "Choose"}</h3>
+            ${many && html`<input class="pick-search" placeholder="Search…" value=${q} onInput=${(e) => setQ(e.target.value)} aria-label="Search" />`}
+            <div class=${`pick-list ${tiles ? "tiles" : ""}`}>
+                ${groups.map((g) => html`<section>${g && html`<div class="pick-group">${g}</div>`}<div class="pick-items">
+                    ${shown.filter((o) => (o.group ?? "") === g).map((o) => html`<button type="button" class=${`pick-opt ${String(o.value) === String(pending) ? "on" : ""} ${String(o.value) === String(value) ? "current" : ""}`}
+                        aria-pressed=${String(o.value) === String(pending)} onClick=${() => setPending(o.value)} onDblClick=${() => onPick(o.value)}>
+                        ${o.img ? html`<img src=${o.img} alt="" loading="lazy" />` : o.svg ? html`<span class="pick-svg" dangerouslySetInnerHTML=${{ __html: o.svg }} />` : null}
+                        <span>${o.label}</span></button>`)}
+                </div></section>`)}
+                ${!shown.length && html`<p class="muted">Nothing matches.</p>`}
+            </div>
+            <div class="spread pick-foot"><span class="muted small-note">Double-click to choose at once</span>
+                <span class="row"><button type="button" onClick=${onClose}>Cancel</button><button type="button" class="primary" onClick=${() => onPick(pending)}>Confirm</button></span></div>
+        </div>
+    </div>`;
+}
 const mapHref = (p) => `#/map/${encodeURIComponent(p)}`;
 const linkName = (v) => String(v ?? "").replace(/^\[\[|\]\]$/g, "").split("|")[0];
 
@@ -250,9 +315,9 @@ function NewMap({ data, onCreate }) {
         </div>
         <div class="formgrid" style="max-width:520px">
             ${kind === "grid" ? html`
-                <label>Default terrain</label><select value=${terrain} onChange=${(e) => setTerrain(e.target.value)}>${Object.entries(TERRAINS).map(([k, t]) => html`<option value=${k}>${t.name}</option>`)}</select>
+                <label>Default terrain</label><${Pick} label="Default terrain" value=${terrain} onChange=${setTerrain} options=${Object.entries(TERRAINS).map(([k, t]) => ({ value: k, label: t.name, img: texPreviewUrl(t.floor ?? "void", TEX_CUSTOM) }))} />
                 <label>Size (squares)</label><span class="row"><input type="number" min="4" max="200" value=${cols} onInput=${(e) => setCols(+e.target.value)} style="width:80px" /> × <input type="number" min="4" max="200" value=${rows} onInput=${(e) => setRows(+e.target.value)} style="width:80px" /></span>`
-            : html`<label>Background</label><select value=${backdrop} onChange=${(e) => setBackdrop(e.target.value)}>${Object.entries(BACKDROPS).map(([k, n]) => html`<option value=${k}>${n}</option>`)}</select>`}
+            : html`<label>Background</label><${Pick} label="Background" value=${backdrop} onChange=${setBackdrop} options=${Object.entries(BACKDROPS).map(([k, n]) => ({ value: k, label: n, img: texPreviewUrl(k, TEX_CUSTOM) }))} />`}
         </div>
         <button class="primary" onClick=${() => onCreate(newMap(kind, { terrain, backdrop, cols, rows }))}>Create map</button>
         <p class="muted small-note">The map is saved as <code>${data.file}</code> and linked from the location note.</p>
@@ -302,6 +367,7 @@ function Editor({ data }) {
     const [space, setSpace] = useState(false);
     const [library, setLibrary] = useState(null);
     const svgRef = useRef(), wrapRef = useRef(), dragRef = useRef(null), clip = useRef([]);
+    useEffect(() => { focusCanvas = () => wrapRef.current?.focus({ preventScroll: true }); return () => { focusCanvas = null; }; }, []);
     const [size, setSize] = useState({ w: 800, h: 600 });
     const [view, setView] = useState(null);
 
@@ -317,6 +383,7 @@ function Editor({ data }) {
     useEffect(() => { api.get("/api/textures").then(setTexLib).catch(() => {}); }, []);
     const customTex = useMemo(() => ({ ...(doc.textures ?? {}), ...texLib.textures }), [doc.textures, texLib]);
     TEX = useMemo(() => textureCatalog(customTex), [customTex]);
+    TEX_CUSTOM = customTex;
     /** the map document with copies of the derived textures it uses (so the saved map never depends on the library) */
     const withTextures = (d) => {
         const need = new Set();
@@ -343,23 +410,50 @@ function Editor({ data }) {
     const withLayer = (d, fn) => ({ ...d, layers: d.layers.map((l) => (l.id === d.active ? fn(l) : l)) });
     const withObjects = (d, fn) => withLayer(d, (l) => ({ ...l, objects: fn(l.objects) }));
     const locked = () => { if (active.locked) { toast(`${active.name} is locked`); return true; } return false; };
-    // Rooms hold child objects in their own coordinates. entries: every object on the active layer with the room holding it.
+    // Rooms hold child objects in their own coordinates, and rooms can stand inside rooms. entries: every object on the
+    // active layer with the room holding it, that room as seen on the map (worldRoom), so conversions work at any depth.
     const layerOf = (d) => d.layers.find((l) => l.id === d.active) ?? d.layers[0];
-    const entriesOf = (objs) => objs.flatMap((o) => (o.type === "room" ? [{ o, room: null }, ...(o.children ?? []).map((c) => ({ o: c, room: o }))] : [{ o, room: null }]));
+    const entriesOf = (objs, parent = null) => objs.flatMap((o) => (o.type === "room"
+        ? [{ o, room: parent }, ...entriesOf(o.children ?? [], worldRoom(o, parent))]
+        : [{ o, room: parent }]));
     const entries = entriesOf(active.objects);
-    const roomAt = (p, d = docRef.current, except) => [...layerOf(d).objects].reverse().find((r) => r.type === "room" && r.id !== except && inRoom(r, p)) ?? null;
-    /** fn(o, room) -> new object, or null to drop it; applied to rooms and their children */
-    const mapDeep = (d, fn) => withObjects(d, (os) => os.map((o) => {
-        const n = fn(o, null);
-        if (!n) return null;
-        return n.type === "room" ? { ...n, children: (n.children ?? []).map((c) => fn(c, n)).filter(Boolean) } : n;
-    }).filter(Boolean));
-    const addTo = (d, roomId, objs) => (roomId
-        ? withObjects(d, (os) => os.map((r) => (r.id === roomId ? { ...r, children: [...(r.children ?? []), ...objs] } : r)))
-        : withObjects(d, (os) => [...os, ...objs]));
-    /** Add objects given in map coordinates; each lands in the room under it (if any) */
+    /** room id -> the room as seen on the map */
+    const worldRooms = (d = docRef.current) => new Map(entriesOf(layerOf(d).objects).filter((e) => e.o.type === "room").map((e) => [e.o.id, worldRoom(e.o, e.room)]));
+    /** ids of a room and everything inside it */
+    const idsIn = (o) => [o.id, ...allObjects(o.children ?? []).map((c) => c.id)];
+    /** ids of everything inside the rooms among `ids` (they move with their room, not by themselves) */
+    const carriedBy = (d, ids) => new Set(allObjects(layerOf(d).objects).filter((o) => o.type === "room" && ids.includes(o.id)).flatMap((o) => idsIn(o).slice(1)));
+    /** the innermost room under p (as seen on the map); `except` (an id or ids) and what is inside it never count */
+    const roomAt = (p, d = docRef.current, except) => {
+        const skip = new Set([except ?? []].flat());
+        const find = (objs, parent) => {
+            for (const r of [...objs].reverse()) {
+                if (r.type !== "room" || skip.has(r.id)) continue;
+                const wr = worldRoom(r, parent);
+                if (inRoom(wr, p)) return find(r.children ?? [], wr) ?? wr;
+            }
+            return null;
+        };
+        return find(layerOf(d).objects, null);
+    };
+    /** fn(o, room) -> new object, or null to drop it; applied to every object, inside rooms too (room: the holder on the map) */
+    const mapDeep = (d, fn) => {
+        const walk = (objs, parent) => objs.map((o) => {
+            const n = fn(o, parent);
+            if (!n) return null;
+            return n.type === "room" && n.children?.length ? { ...n, children: walk(n.children, worldRoom(n, parent)) } : n;
+        }).filter(Boolean);
+        return withObjects(d, (os) => walk(os, null));
+    };
+    /** add objects (in that room's coordinates) to a room, at any depth, or to the layer */
+    const addTo = (d, roomId, objs) => {
+        if (!roomId) return withObjects(d, (os) => [...os, ...objs]);
+        const walk = (os) => os.map((r) => (r.type !== "room" ? r : r.id === roomId ? { ...r, children: [...(r.children ?? []), ...objs] } : r.children?.length ? { ...r, children: walk(r.children) } : r));
+        return withObjects(d, walk);
+    };
+    /** Add objects given in map coordinates; each lands in the room under it (if any), rooms too */
     const addObjects = (objs, d = docRef.current) => objs.reduce((acc, o) => {
-        const room = o.type === "room" ? null : roomAt(anchorOf(o), acc);
+        const room = roomAt(anchorOf(o), acc, o.type === "room" ? o.id : undefined);
         return addTo(acc, room?.id, [room ? rehome(o, null, room) : o]);
     }, d);
     const selEntries = entries.filter((e) => sel.includes(e.o.id));
@@ -510,7 +604,7 @@ function Editor({ data }) {
         if (room) {
             const B = room.box ?? CELL, lp = toRoom(room, p);
             const c0 = Math.floor(lp[0] / B), r0 = Math.floor(lp[1] / B);
-            return withObjects(d, (os) => os.map((r) => {
+            return mapDeep(d, (r) => {
                 if (r.id !== room.id) return r;
                 const cells = { ...r.cells };
                 for (let c = c0 - off; c < c0 - off + n; c++) for (let q = r0 - off; q < r0 - off + n; q++) {
@@ -518,7 +612,7 @@ function Editor({ data }) {
                     if (erase) delete cells[`${c},${q}`]; else cells[`${c},${q}`] = opt.floor;
                 }
                 return { ...r, cells };
-            }));
+            });
         }
         const [c0, r0] = cellOf(p);
         return withLayer(d, (l) => {
@@ -534,7 +628,7 @@ function Editor({ data }) {
         if (room) {
             const B = room.box ?? CELL, la = toRoom(room, a), lb = toRoom(room, b);
             const [c0, r0, c1, r1] = [la[0], la[1], lb[0], lb[1]].map((v) => Math.floor(v / B));
-            return withObjects(d, (os) => os.map((r) => {
+            return mapDeep(d, (r) => {
                 if (r.id !== room.id) return r;
                 const cells = { ...r.cells };
                 for (let c = Math.min(c0, c1); c <= Math.max(c0, c1); c++) for (let q = Math.min(r0, r1); q <= Math.max(r0, r1); q++) {
@@ -542,7 +636,7 @@ function Editor({ data }) {
                     if (floorId) cells[`${c},${q}`] = floorId; else delete cells[`${c},${q}`];
                 }
                 return { ...r, cells };
-            }));
+            });
         }
         const [c0, r0] = cellOf(a), [c1, r1] = cellOf(b);
         return withLayer(d, (l) => {
@@ -568,14 +662,23 @@ function Editor({ data }) {
         commit(addTo(docRef.current, room?.id, [room ? rehome(o, null, room) : o]));
     };
 
-    /** After moving: things whose anchor left their room (or entered one) change container */
+    /** After moving: things whose anchor left their room (or entered one) change container; rooms too (never into
+     * themselves or what is inside them). Joined rooms change container together, or not at all. */
     const regroup = (d, ids) => {
         let out = d;
+        const moves = [];
+        const carried = carriedBy(d, ids);
         for (const e of entriesOf(layerOf(d).objects)) {
-            if (!ids.includes(e.o.id) || e.o.type === "room") continue;
+            if (!ids.includes(e.o.id) || carried.has(e.o.id)) continue;
             const world = e.room ? fromRoom(e.room, anchorOf(e.o)) : anchorOf(e.o);
-            const target = roomAt(world, out);
+            const target = roomAt(world, d, e.o.type === "room" ? idsIn(e.o) : undefined);
+            moves.push({ e, target });
+        }
+        const groupTargets = new Map();
+        for (const m of moves) if (m.e.o.group) { const t = m.target?.id ?? null; groupTargets.set(m.e.o.group, groupTargets.has(m.e.o.group) && groupTargets.get(m.e.o.group) !== t ? "split" : t); }
+        for (const { e, target } of moves) {
             if ((target?.id ?? null) === (e.room?.id ?? null)) continue;
+            if (e.o.group && groupTargets.get(e.o.group) === "split") continue;
             const moved = rehome(e.o, e.room, target);
             out = mapDeep(out, (o) => (o.id === e.o.id ? null : o));
             out = addTo(out, target?.id, [moved]);
@@ -592,7 +695,7 @@ function Editor({ data }) {
 
     // ---------------------------------------------------------------- joined rooms (same `group` move and turn together)
     /** ids plus every room joined to one of them */
-    const withGroups = (ids, objs = layerOf(docRef.current).objects) => {
+    const withGroups = (ids, objs = allObjects(layerOf(docRef.current).objects)) => {
         const groups = new Set(objs.filter((o) => o.type === "room" && o.group && ids.includes(o.id)).map((o) => o.group));
         return [...new Set([...ids, ...objs.filter((o) => o.type === "room" && groups.has(o.group)).map((o) => o.id)])];
     };
@@ -606,9 +709,11 @@ function Editor({ data }) {
     };
     /** Pull moving rooms onto nearby rooms' edges: {dx, dy} added to the move, or null */
     const edgeSnap = (d0, ids, dx, dy) => {
-        const objs = layerOf(d0).objects;
-        const moving = objs.filter((o) => o.type === "room" && ids.includes(o.id));
-        const others = objs.filter((o) => o.type === "room" && !ids.includes(o.id));
+        // every room as seen on the map; rooms inside a moving room move with it and don't count
+        const wr = worldRooms(d0);
+        const carried = new Set(entriesOf(layerOf(d0).objects).filter((e) => e.o.type === "room" && ids.includes(e.o.id)).flatMap((e) => idsIn(e.o)));
+        const moving = [...wr.values()].filter((o) => ids.includes(o.id));
+        const others = [...wr.values()].filter((o) => !carried.has(o.id));
         if (!moving.length || !others.length) return null;
         const T = 14 / v.z;
         let bx = null, by = null;
@@ -632,9 +737,10 @@ function Editor({ data }) {
     };
     /** Join the moved rooms to every room they now touch; returns {doc, joined} */
     const joinTouching = (d, ids) => {
-        const rooms = layerOf(d).objects.filter((o) => o.type === "room");
+        // rooms join the rooms next to them in the same room (or on the map)
+        const rooms = entriesOf(layerOf(d).objects).filter((e) => e.o.type === "room").map((e) => ({ ...worldRoom(e.o, e.room), holder: e.room?.id ?? null }));
         const pairs = [];
-        for (const m of rooms.filter((r) => ids.includes(r.id))) for (const o of rooms) if (o.id !== m.id && !ids.includes(o.id) && touching(o, m) && (!o.group || o.group !== m.group)) pairs.push([m, o]);
+        for (const m of rooms.filter((r) => ids.includes(r.id))) for (const o of rooms) if (o.id !== m.id && o.holder === m.holder && !ids.includes(o.id) && touching(o, m) && (!o.group || o.group !== m.group)) pairs.push([m, o]);
         if (!pairs.length) return { doc: d, joined: 0 };
         let out = d;
         for (const [m, o] of pairs) out = joinRooms(out, [m.id, o.id]);
@@ -642,22 +748,23 @@ function Editor({ data }) {
     };
     /** Put rooms (and everything already joined to them) in one group */
     const joinRooms = (d, ids) => {
-        const objs = layerOf(d).objects;
+        const objs = allObjects(layerOf(d).objects);
         const groups = new Set(objs.filter((o) => ids.includes(o.id) && o.group).map((o) => o.group));
         const g = [...groups][0] ?? `g${uid()}`;
-        return withObjects(d, (os) => os.map((o) => (o.type === "room" && (ids.includes(o.id) || groups.has(o.group)) ? { ...o, group: g } : o)));
+        return mapDeep(d, (o) => (o.type === "room" && (ids.includes(o.id) || groups.has(o.group)) ? { ...o, group: g } : o));
     };
     /** Take rooms out of their groups (a group left with one room dissolves) */
     const separateRooms = (d, ids) => {
-        let out = withObjects(d, (os) => os.map((o) => (ids.includes(o.id) && o.group ? { ...o, group: undefined } : o)));
-        const objs = layerOf(out).objects;
+        let out = mapDeep(d, (o) => (ids.includes(o.id) && o.group ? { ...o, group: undefined } : o));
         const count = new Map();
-        for (const o of objs) if (o.group) count.set(o.group, (count.get(o.group) ?? 0) + 1);
-        return withObjects(out, (os) => os.map((o) => (o.group && count.get(o.group) < 2 ? { ...o, group: undefined } : o)));
+        for (const o of allObjects(layerOf(out).objects)) if (o.group) count.set(o.group, (count.get(o.group) ?? 0) + 1);
+        return mapDeep(out, (o) => (o.group && count.get(o.group) < 2 ? { ...o, group: undefined } : o));
     };
     const joinSelected = () => {
-        const ids = selected.filter((o) => o.type === "room").map((o) => o.id);
+        const picked = selEntries.filter((x) => x.o.type === "room");
+        const ids = picked.map((x) => x.o.id);
         if (ids.length < 2) return toast("Select two or more rooms to join");
+        if (new Set(picked.map((x) => x.room?.id ?? null)).size > 1) return toast("Only rooms in the same room (or all on the map) can be joined");
         commit(joinRooms(docRef.current, ids)); toast(`Joined ${ids.length} rooms`);
     };
     const separateSelected = () => {
@@ -670,7 +777,7 @@ function Editor({ data }) {
     const [roomPoly, setRoomPoly] = useState(null); // polygon being drawn: {room, pts (room coordinates)}
     const roomPolyRef = useRef(null); roomPolyRef.current = roomPoly;
     /** the selected room, else the room under p */
-    const targetRoom = (p) => { const s = selEntries.find((x) => x.o.type === "room")?.o; return s ?? roomAt(p); };
+    const targetRoom = (p) => { const s = selEntries.find((x) => x.o.type === "room"); return s ? worldRoom(s.o, s.room) : roomAt(p); };
     const snapLocal = (room, lp, e) => { if (!snapOn(e)) return lp; const B = room.box ?? CELL; return lp.map((v) => Math.round(v / B) * B); };
     const addShape = (roomId, shape) => {
         commit(mapDeep(docRef.current, (o) => (o.id === roomId ? { ...o, shapes: [...(o.shapes ?? []), shape] } : o)));
@@ -685,8 +792,7 @@ function Editor({ data }) {
     /** nearest room wall to p (within reach): {room, q (room coordinates), angle} */
     const wallHit = (p, e) => {
         let best = null;
-        for (const r of active.objects) {
-            if (r.type !== "room") continue;
+        for (const r of worldRooms().values()) {
             let lp = toRoom(r, p);
             const B = r.box ?? CELL;
             if (snapOn(e)) lp = lp.map((v) => Math.round(v / (B / 2)) * (B / 2));
@@ -697,6 +803,8 @@ function Editor({ data }) {
     };
 
     const onPointerDown = (e) => {
+        // clicking the map takes the keyboard back from any control in the panels (so WASD and Space act on the map)
+        if (document.activeElement !== wrapRef.current && !e.target.closest?.("input, textarea")) focusCanvas?.();
         if (e.button === 1 || space || tool === "pan") {
             e.preventDefault();
             dragRef.current = { kind: "pan", sx: e.clientX, sy: e.clientY, v0: v };
@@ -759,7 +867,13 @@ function Editor({ data }) {
                 capture();
                 break;
             }
-            case "room": if (grid && !locked()) { dragRef.current = { kind: "room", p0: p, d0, free: !snapOn(e) }; setGhost({ rect: [p, p], free: !snapOn(e) }); capture(); } break;
+            case "room": if (grid && !locked()) {
+                // started inside a room: the new room goes in it, on its grid and at its angle
+                const holder = roomAt(p);
+                dragRef.current = { kind: "room", p0: p, d0, free: !snapOn(e), room: holder };
+                setGhost({ rect: [p, p], free: !snapOn(e), room: holder });
+                capture();
+            } break;
             case "text": {
                 if (locked()) return;
                 const { room, lp, B } = spaceAt(p);
@@ -827,9 +941,14 @@ function Editor({ data }) {
                 const snap = !e.altKey && edgeSnap(dr.d0, dr.ids, tx, ty);
                 if (snap) { tx += snap.dx; ty += snap.dy; }
                 dr.snapped = !!snap;
+                dr.carried ??= carriedBy(dr.d0, dr.ids);
                 let next = mapDeep(dr.d0, (o, room) => {
-                    if (!dr.ids.includes(o.id) || (room && dr.ids.includes(room.id))) return o;
-                    return room ? moveObject(o, ...deltaFor(room, dx, dy, e)) : moveObject(o, tx, ty);
+                    if (!dr.ids.includes(o.id) || dr.carried.has(o.id)) return o;
+                    if (!room) return moveObject(o, tx, ty);
+                    // inside a room: the move in the room's own frame and grid, plus any edge snap
+                    let [lx, ly] = deltaFor(room, dx, dy, e);
+                    if (snap && o.type === "room") { const [sx, sy] = room.rot ? rotPt([snap.dx, snap.dy], [0, 0], -room.rot) : [snap.dx, snap.dy]; lx += sx; ly += sy; }
+                    return moveObject(o, lx, ly);
                 });
                 // a single pipe or plant stamp snaps onto the nearest connection point
                 if (dr.ids.length === 1 && !e.altKey) {
@@ -875,14 +994,15 @@ function Editor({ data }) {
                 const q = dr.room ? toRoom(dr.room, p) : p;
                 let a = (Math.atan2(q[1] - cy, q[0] - cx) * 180) / Math.PI + 90;
                 a = e.shiftKey ? Math.round(a) : Math.round(a / 10) * 10; // 10° steps, Shift: free
-                const members = o.type === "room" && o.group ? layerOf(dr.d0).objects.filter((x) => x.type === "room" && x.group === o.group) : [];
+                // joined rooms stand in the same room, so they share a frame and turn together about this one's centre
+                const members = o.type === "room" && o.group ? allObjects(layerOf(dr.d0).objects).filter((x) => x.type === "room" && x.group === o.group) : [];
                 if (members.length > 1) {
                     const delta = a - (o.rot ?? 0), pivot = [cx, cy];
-                    live(withObjects(dr.d0, (os) => os.map((x) => {
+                    live(mapDeep(dr.d0, (x) => {
                         if (!members.includes(x)) return x;
                         const c = rotPt([x.x + x.w / 2, x.y + x.h / 2], pivot, delta);
                         return { ...x, x: c[0] - x.w / 2, y: c[1] - x.h / 2, rot: ((((x.rot ?? 0) + delta) % 360) + 360) % 360 };
-                    })));
+                    }));
                 } else live(mapDeep(dr.d0, (x) => (x.id === o.id ? { ...x, rot: ((a % 360) + 360) % 360 } : x)));
                 break;
             }
@@ -934,17 +1054,23 @@ function Editor({ data }) {
             case "rect": commit(fillRect(dr.d0, dr.p0, p, dr.erase ? null : opt.floor), dr.d0); setGhost(null); break;
             case "room": {
                 setGhost(null);
+                // corners in the frame of the room it is drawn in (or the map), on that grid unless snapping is off
+                const holder = dr.room, B = holder ? holder.box ?? CELL : CELL;
+                const a = holder ? toRoom(holder, dr.p0) : dr.p0, b = holder ? toRoom(holder, p) : p;
                 let x0, y0, x1, y1;
-                if (dr.free) [x0, y0, x1, y1] = [Math.min(dr.p0[0], p[0]), Math.min(dr.p0[1], p[1]), Math.max(dr.p0[0], p[0]), Math.max(dr.p0[1], p[1])];
+                if (dr.free) [x0, y0, x1, y1] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])];
                 else {
-                    const [c0, r0] = cellOf(dr.p0), [c1, r1] = cellOf(p);
-                    [x0, y0, x1, y1] = [Math.min(c0, c1) * CELL, Math.min(r0, r1) * CELL, (Math.max(c0, c1) + 1) * CELL, (Math.max(r0, r1) + 1) * CELL];
+                    const [c0, r0, c1, r1] = [a[0], a[1], b[0], b[1]].map((q) => Math.floor(q / B));
+                    [x0, y0, x1, y1] = [Math.min(c0, c1) * B, Math.min(r0, r1) * B, (Math.max(c0, c1) + 1) * B, (Math.max(r0, r1) + 1) * B];
                 }
                 if (x1 - x0 < 8 || y1 - y0 < 8) break;
                 const room = { id: uid(), type: "room", x: x0, y: y0, w: x1 - x0, h: y1 - y0, box: opt.roomBox ?? CELL, floor: opt.floor, wall: opt.wallStyle, grid: true, cells: {}, children: [] };
-                // things already standing inside become part of the room
-                let d = addTo(dr.d0, null, [room]);
-                const inside = layerOf(d).objects.filter((o) => o.type !== "room" && inRoom(room, anchorOf(o))).map((o) => o.id);
+                // things already standing inside (in the same room, or on the map) become part of the new room
+                let d = addTo(dr.d0, holder?.id, [room]);
+                const placed = worldRoom(room, holder);
+                const inside = entriesOf(layerOf(d).objects)
+                    .filter((x) => x.o.id !== room.id && (x.room?.id ?? null) === (holder?.id ?? null) && inRoom(placed, x.room ? fromRoom(x.room, anchorOf(x.o)) : anchorOf(x.o)))
+                    .map((x) => x.o.id);
                 d = regroup(d, inside);
                 commit(d, dr.d0);
                 setSel([room.id]); setPanel("inspect");
@@ -1001,7 +1127,8 @@ function Editor({ data }) {
         const key = child.name.toLowerCase();
         const have = placedPins.get(key);
         let d = docRef.current;
-        if (have) d = { ...d, layers: d.layers.map((l) => (l === have.layer ? { ...l, objects: l.objects.filter((o) => o.id !== have.o.id).map((o) => (o.type === "room" ? { ...o, children: (o.children ?? []).filter((c) => c.id !== have.o.id) } : o)) } : l)) };
+        const drop = (os) => os.filter((o) => o.id !== have.o.id).map((o) => (o.type === "room" && o.children?.length ? { ...o, children: drop(o.children) } : o));
+        if (have) d = { ...d, layers: d.layers.map((l) => (l === have.layer ? { ...l, objects: drop(l.objects) } : l)) };
         commit(addObjects([{ ...(have?.o ?? { id: uid(), type: "pin", location: `[[${child.name}]]` }), x: p[0], y: p[1] }], d));
         const next = data.children.find((c) => c.name !== child.name && !placedPins.has(c.name.toLowerCase()));
         setO({ pinLoc: next ?? null });
@@ -1040,8 +1167,8 @@ function Editor({ data }) {
                 e.preventDefault();
                 const step = grid && doc.snap ? CELL : e.shiftKey ? 10 : 1;
                 const [dx, dy] = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
-                const ids = withGroups(sel);
-                commit(regroup(mapDeep(docRef.current, (o, room) => (ids.includes(o.id) && !(room && ids.includes(room.id)) ? moveObject(o, ...deltaFor(room, dx, dy, e)) : o)), ids));
+                const ids = withGroups(sel), carried = carriedBy(docRef.current, ids);
+                commit(regroup(mapDeep(docRef.current, (o, room) => (ids.includes(o.id) && !carried.has(o.id) ? moveObject(o, ...deltaFor(room, dx, dy, e)) : o)), ids));
                 return;
             }
             if (e.key === "[" || e.key === "]") { order(e.key === "]" ? "up" : "down"); return; }
@@ -1107,13 +1234,13 @@ function Editor({ data }) {
 
     // ---------------------------------------------------------------- selection actions
     const removeSel = () => { if (locked()) return; commit(mapDeep(docRef.current, (o) => (sel.includes(o.id) ? null : o))); setSel([]); };
-    const withIds = (o) => (o.type === "room" ? { ...o, id: uid(), children: (o.children ?? []).map((c) => ({ ...c, id: uid() })) } : { ...o, id: uid() });
+    const withIds = (o) => (o.type === "room" ? { ...o, id: uid(), group: undefined, children: (o.children ?? []).map(withIds) } : { ...o, id: uid() });
     const duplicate = () => {
         if (!selected.length || locked()) return;
         let d = docRef.current;
-        const ids = [];
+        const ids = [], carried = carriedBy(d, sel);
         for (const { o, room } of selEntries) {
-            if (room && sel.includes(room.id)) continue;
+            if (carried.has(o.id)) continue;
             const off = room ? room.box ?? CELL : grid ? CELL : 20;
             const c = withIds(moveObject(o, off, off));
             d = addTo(d, room?.id, [c]);
@@ -1126,17 +1253,23 @@ function Editor({ data }) {
         const pick = os.filter((o) => sel.includes(o.id)), rest = os.filter((o) => !sel.includes(o.id));
         return dir === "top" || dir === "up" ? [...rest, ...pick] : [...pick, ...rest];
     };
-    const order = (dir) => commit(withObjects(docRef.current, (os) => reorder(os, dir).map((o) => (o.type === "room" ? { ...o, children: reorder(o.children ?? [], dir) } : o))));
+    const order = (dir) => {
+        const walk = (os) => reorder(os, dir).map((o) => (o.type === "room" && o.children?.length ? { ...o, children: walk(o.children) } : o));
+        commit(withObjects(docRef.current, walk));
+    };
     const patchSel = (patch) => commit(mapDeep(docRef.current, (o) => (sel.includes(o.id) ? { ...o, ...(typeof patch === "function" ? patch(o) : patch) } : o)));
-    /** A room's things become ordinary map objects again */
+    /** A room's things move out into whatever holds the room (another room, or the map) */
     const releaseRoom = (room) => {
+        const e = entries.find((x) => x.o.id === room.id);
+        const holder = e?.room ?? null, wr = worldRoom(room, holder);
         let d = mapDeep(docRef.current, (o) => (o.id === room.id ? { ...o, children: [] } : o));
-        commit(addTo(d, null, (room.children ?? []).map((c) => rehome(c, room, null))));
+        commit(addTo(d, holder?.id, (room.children ?? []).map((c) => rehome(c, wr, holder))));
     };
     const toLayer = (id) => {
         const d = docRef.current;
-        const moving = selEntries.filter((x) => !(x.room && sel.includes(x.room.id))).map((x) => (x.room ? rehome(x.o, x.room, null) : x.o));
-        const out = mapDeep(d, (o, room) => (sel.includes(o.id) && !(room && sel.includes(room.id) && o.type !== "room") ? null : o));
+        const carried = carriedBy(d, sel);
+        const moving = selEntries.filter((x) => !carried.has(x.o.id)).map((x) => (x.room ? rehome(x.o, x.room, null) : x.o));
+        const out = mapDeep(d, (o) => (sel.includes(o.id) && !carried.has(o.id) ? null : o));
         commit({ ...out, layers: out.layers.map((l) => (l.id === id ? { ...l, objects: [...l.objects, ...moving] } : l)) });
         setSel([]);
         toast(`Moved to ${d.layers.find((l) => l.id === id)?.name}`);
@@ -1155,6 +1288,9 @@ function Editor({ data }) {
     currentLod = lod;
     const texKeyOf = (id) => `${id}|${JSON.stringify(customTex[id] ?? null)}|${JSON.stringify(customTex[customTex[id]?.from] ?? null)}`;
     const regionRef = useRef(null);
+    // every room as seen on the map (rooms inside rooms included), for drawing their bitmaps near the view
+    const placedRooms = useRef(new Map());
+    placedRooms.current = useMemo(() => new Map(doc.layers.flatMap((l) => entriesOf(l.objects).filter((e) => e.o.type === "room").map((e) => [e.o.id, worldRoom(e.o, e.room)]))), [doc.layers]);
     const ctx = useMemo(() => ({
         edit: true, stampHref: (o) => o.src, pinLabel: (o) => names.get(linkName(o.location).toLowerCase()) ?? linkName(o.location),
         // selected ribbons stay vector (they are being edited); the rest use bitmaps of their pieces once drawn
@@ -1170,7 +1306,7 @@ function Editor({ data }) {
             // mid-stroke (painting, reshaping, resizing) the room stays live; the bitmap is made when you let go
             if (["paint", "rect", "resize", "roomshape"].includes(dragRef.current?.kind)) return null;
             const look = `rm|${roomLookKey(o)}|${JSON.stringify([o.floor, ...Object.values(o.cells ?? {})].map((f) => customTex[f] ?? null))}`;
-            const r = roomBitmaps(o, look, lod, regionRef.current, customTex, texKeyOf, () => setRasterTick((t) => t + 1));
+            const r = roomBitmaps(placedRooms.current.get(o.id) ?? o, look, lod, regionRef.current, customTex, texKeyOf, () => setRasterTick((t) => t + 1));
             if (!r.length) return null;
             return r.map((t) => `<image href="${t.url}" x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}" preserveAspectRatio="none"/>`).join("");
         },
@@ -1206,7 +1342,7 @@ function Editor({ data }) {
     // pattern once floors, rooms and ribbons are bitmaps) switch to the vector texture so they stay sharp
     const vectorTex = lod > RASTER_SCALE;
     const areaTex = vectorTex ? [...new Set([
-        ...doc.layers.flatMap((l) => l.objects.flatMap((x) => (x.type === "room" ? x.children ?? [] : [x]))).filter((o) => o.type === "area").map((o) => o.fill ?? "parchment"),
+        ...doc.layers.flatMap((l) => allObjects(l.objects)).filter((o) => o.type === "area").map((o) => o.fill ?? "parchment"),
         ...(tool === "area" ? [opt.areaFill] : []),
     ])].filter((id) => needTex.includes(id)).sort() : [];
     const patterns = useMemo(() => (canRaster()
@@ -1293,9 +1429,12 @@ function Editor({ data }) {
             out.push(frame ? html`<g transform=${frame}>${box}</g>` : box);
         }
         const groups = new Set(selected.filter((o) => o.type === "room" && o.group).map((o) => o.group));
-        for (const r of active.objects) if (r.type === "room" && groups.has(r.group) && !sel.includes(r.id)) out.push(html`<g transform=${roomFrame(r)}><rect width=${r.w} height=${r.h} class="group-box" stroke-width=${1.5 / v.z} /></g>`);
+        for (const r of worldRooms(doc).values()) if (groups.has(r.group) && !sel.includes(r.id)) out.push(html`<g transform=${roomFrame(r)}><rect width=${r.w} height=${r.h} class="group-box" stroke-width=${1.5 / v.z} /></g>`);
         if (ghost?.box) { const [a, b] = ghost.box; out.push(html`<rect x=${Math.min(a[0], b[0])} y=${Math.min(a[1], b[1])} width=${Math.abs(a[0] - b[0])} height=${Math.abs(a[1] - b[1])} class="box-sel" stroke-width=${1 / v.z} />`); }
-        if (ghost?.rect && ghost.free) {
+        if (ghost?.rect && ghost.free && ghost.room) {
+            const room = ghost.room, la = toRoom(room, ghost.rect[0]), lb = toRoom(room, ghost.rect[1]);
+            out.push(html`<g transform=${roomFrame(room)}><rect x=${Math.min(la[0], lb[0])} y=${Math.min(la[1], lb[1])} width=${Math.abs(la[0] - lb[0])} height=${Math.abs(la[1] - lb[1])} class="box-sel" stroke-width=${2 / v.z} /></g>`);
+        } else if (ghost?.rect && ghost.free) {
             const [a, b] = ghost.rect;
             out.push(html`<rect x=${Math.min(a[0], b[0])} y=${Math.min(a[1], b[1])} width=${Math.abs(a[0] - b[0])} height=${Math.abs(a[1] - b[1])} class="box-sel" stroke-width=${2 / v.z} />`);
         } else if (ghost?.rect && ghost.room) {
@@ -1394,7 +1533,7 @@ function Editor({ data }) {
                 onClick=${() => { setTool(id); setDraft(null); if (id === "pin") setPanel("pins"); if (id === "stamp" || id === "scatter") setPanel("stamps"); }}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${d} /></svg></button>`)}
             </nav>
-            <section class="map-canvas" ref=${wrapRef}>
+            <section class="map-canvas" ref=${wrapRef} tabindex="-1">
                 <${ToolOptions} tool=${tool} opt=${opt} setO=${setO} grid=${grid} draft=${draft} finishDraft=${finishDraft} data=${data} />
                 <svg ref=${svgRef} class="map-svg" viewBox=${vb} style=${`cursor:${cursor}`} xmlns="http://www.w3.org/2000/svg"
                     onPointerDown=${onPointerDown} onPointerMove=${onPointerMove} onPointerUp=${onPointerUp} onPointerLeave=${() => setHover(null)}
@@ -1417,7 +1556,7 @@ function Editor({ data }) {
                     ${layerViews.filter((x) => x.shown).map((x, i, all) => html`<g key=${x.layer.id} class=${x.active ? "layer-active" : "layer-below"} opacity=${x.faded ? 0.35 : 1}
                         pointer-events=${x.active && !x.layer.locked ? "auto" : "none"}>
                         <g pointer-events="none" dangerouslySetInnerHTML=${{ __html: useChunks ? floorChunks(x.layer) : markup(x.layer).floor }} />
-                        ${i === all.length - 1 && (grid ? doc.showGrid && html`<rect x=${ext.x} y=${ext.y} width=${ext.w} height=${ext.h} fill="url(#grid-lines-ed)" pointer-events="none" />`
+                        ${i === all.length - 1 && (grid ? doc.showGrid && CELL * v.z >= 10 && html`<rect x=${ext.x} y=${ext.y} width=${ext.w} height=${ext.h} fill="url(#grid-lines-ed)" pointer-events="none" opacity=${Math.min(1, (CELL * v.z - 10) / 14)} />`
                             : html`<g pointer-events="none" dangerouslySetInnerHTML=${{ __html: gridSvg(doc) }} />`)}
                         <g dangerouslySetInnerHTML=${{ __html: markup(x.layer).objects }} />
                     </g>`)}
@@ -1449,8 +1588,7 @@ function Editor({ data }) {
 
 function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data }) {
     const styles = Object.entries(PATH_STYLES).filter(([, s]) => s.modes === "both" || s.modes === (grid ? "grid" : "freeform"));
-    const floorSelect = (value, on) => html`<select value=${value} onChange=${(e) => on(e.target.value)}>${texOptions()}</select>`;
-    const swatch = (id) => html`<svg width="22" height="22" class="swatch" aria-hidden="true"><rect width="22" height="22" fill=${`url(#f-${id})`} /></svg>`;
+    const floorSelect = (value, on, label = "Texture") => html`<${Pick} label=${label} value=${value} onChange=${on} options=${texChoices()} />`;
     const body = {
         select: html`<span class="muted">Click to select, Shift-click to add, drag on empty space to box-select. Double-click a line to add a point, a point to remove it. Del deletes, Ctrl+D duplicates, [ ] reorder. WASD pans.</span>`,
         pan: html`<span class="muted">Drag to pan, or hold W A S D (Shift: faster). Wheel zooms; 0 fits the map.</span>`,
@@ -1465,11 +1603,11 @@ function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data }) {
             <label class="row">Density <input type="range" min="1" max="10" value=${opt.density} onInput=${(e) => setO({ density: +e.target.value })} /></label>
             <label class="row">Size ± <input type="range" min="0" max="0.6" step="0.05" value=${opt.jitter} onInput=${(e) => setO({ jitter: +e.target.value })} /></label>
             <label class="row">Spacing <input type="range" min="0.2" max="1.5" step="0.05" value=${opt.spacing} onInput=${(e) => setO({ spacing: +e.target.value })} /></label>`,
-        line: html`<label class="row">Style <select value=${opt.pathStyle} onChange=${(e) => setO({ pathStyle: e.target.value })}>${styles.map(([k, s]) => html`<option value=${k}>${s.name}</option>`)}</select></label>
+        line: html`<span class="row">Style <${Pick} label="Line style" value=${opt.pathStyle} onChange=${(v) => setO({ pathStyle: v })} options=${styleChoices(styles)} /></span>
             <${StylePreview} style=${opt.pathStyle} />
             <span class="muted">Click points (Enter or double-click ends, Backspace removes the last) or drag to draw freehand.</span>
             ${draft && html`<button class="small" onClick=${() => finishDraft()}>Finish</button>`}`,
-        ribbon: html`<label class="row">Kind <select value=${opt.ribbonStyle} onChange=${(e) => setO({ ribbonStyle: e.target.value, ribbonCols: RIBBONS[e.target.value].cols })}>${Object.entries(RIBBONS).map(([k, r]) => html`<option value=${k}>${r.name}</option>`)}</select></label>
+        ribbon: html`<span class="row">Kind <${Pick} label="Track or strip" value=${opt.ribbonStyle} onChange=${(v) => setO({ ribbonStyle: v, ribbonCols: RIBBONS[v].cols })} options=${plainChoices(Object.entries(RIBBONS).map(([k, r]) => [k, r.name]))} /></span>
             <label class="row">Boxes across <input type="number" min="1" max="12" value=${opt.ribbonCols} style="width:56px" onChange=${(e) => setO({ ribbonCols: Math.max(1, +e.target.value) })} /></label>
             <label class="row">Box size <input type="number" min="8" max="256" value=${opt.ribbonBox} style="width:64px" onChange=${(e) => setO({ ribbonBox: Math.max(8, +e.target.value) })} /> px</label>
             <label class="row"><input type="checkbox" checked=${opt.ribbonGrid} onChange=${(e) => setO({ ribbonGrid: e.target.checked })} /> Own grid</label>
@@ -1478,22 +1616,22 @@ function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data }) {
         roomshape: html`<div class="seg" role="group" aria-label="Add or cut">${[["add", "Add"], ["sub", "Cut away"]].map(([k, l]) => html`<button class=${opt.roomOp === k ? "on" : ""} aria-pressed=${opt.roomOp === k} onClick=${() => setO({ roomOp: k })}>${l}</button>`)}</div>
             <div class="seg" role="group" aria-label="Shape">${[["rect", "Box"], ["circle", "Circle"], ["poly", "Polygon"]].map(([k, l]) => html`<button class=${opt.roomShape === k ? "on" : ""} aria-pressed=${opt.roomShape === k} onClick=${() => setO({ roomShape: k })}>${l}</button>`)}</div>
             <span class="muted">${opt.roomShape === "poly" ? "Click corners, Enter or double-click to finish." : opt.roomShape === "circle" ? "Drag from the centre." : "Drag a box."} Works in the selected room's own grid and angle; walls follow.</span>`,
-        opening: html`<label class="row">Put in <select value=${opt.openKind} onChange=${(e) => setO({ openKind: e.target.value })}><option value="opening">Opening only</option><option value="door">Door</option><option value="double-door">Double door</option><option value="window">Window</option></select></label>
-            <label class="row">Width <select value=${opt.openLen} onChange=${(e) => setO({ openLen: +e.target.value })}>${[1, 2, 3, 4].map((n) => html`<option value=${n}>${n} box${n > 1 ? "es" : ""}</option>`)}</select></label>
+        opening: html`<span class="row">Put in <${Pick} label="Put in the wall" value=${opt.openKind} onChange=${(v) => setO({ openKind: v })} options=${plainChoices([["opening", "Opening only"], ["door", "Door"], ["double-door", "Double door"], ["window", "Window"]])} /></span>
+            <span class="row">Width <${Pick} label="Opening width" value=${opt.openLen} onChange=${(v) => setO({ openLen: +v })} options=${plainChoices([1, 2, 3, 4].map((n) => [n, `${n} box${n > 1 ? "es" : ""}`]))} /></span>
             <span class="muted">Click on a room wall. It turns with the wall.</span>`,
-        unfloor: html`<label class="row">Brush <select value=${opt.brush} onChange=${(e) => setO({ brush: +e.target.value })}>${[1, 2, 3, 5].map((n) => html`<option value=${n}>${n}×${n}</option>`)}</select></label>
+        unfloor: html`<span class="row">Brush <${Pick} label="Brush size" value=${opt.brush} onChange=${(v) => setO({ brush: +v })} options=${plainChoices([1, 2, 3, 5].map((n) => [n, `${n}×${n}`]))} /></span>
             <span class="muted">Drag to erase painted floor back to the default terrain; Shift-drag erases a rectangle.</span>`,
-        area: html`<label class="row">Fill ${swatch(opt.areaFill)} ${floorSelect(opt.areaFill, (v) => setO({ areaFill: v }))}</label>
-            <label class="row">Edge <select value=${opt.areaEdge} onChange=${(e) => setO({ areaEdge: e.target.value })}><option value="none">None</option>${styles.map(([k, s]) => html`<option value=${k}>${s.name}</option>`)}</select></label>
+        area: html`<span class="row">Fill ${floorSelect(opt.areaFill, (v) => setO({ areaFill: v }), "Area fill")}</span>
+            <span class="row">Edge <${Pick} label="Area edge" value=${opt.areaEdge} onChange=${(v) => setO({ areaEdge: v })} options=${styleChoices(styles, [{ value: "none", label: "None" }])} /></span>
             <span class="muted">Drag around the area, or click its corners and press Enter.</span>`,
-        floor: html`<label class="row">Floor ${swatch(opt.floor)} ${floorSelect(opt.floor, (v) => setO({ floor: v }))}</label>
-            <label class="row">Brush <select value=${opt.brush} onChange=${(e) => setO({ brush: +e.target.value })}>${[1, 2, 3, 5].map((n) => html`<option value=${n}>${n}×${n}</option>`)}</select></label>
+        floor: html`<span class="row">Floor ${floorSelect(opt.floor, (v) => setO({ floor: v }), "Floor")}</span>
+            <span class="row">Brush <${Pick} label="Brush size" value=${opt.brush} onChange=${(v) => setO({ brush: +v })} options=${plainChoices([1, 2, 3, 5].map((n) => [n, `${n}×${n}`]))} /></span>
             <span class="muted">Drag to paint, Shift-drag fills a rectangle, Alt or right button erases (back to the default terrain).</span>`,
-        room: html`<label class="row">Floor ${swatch(opt.floor)} ${floorSelect(opt.floor, (v) => setO({ floor: v }))}</label>
-            <label class="row">Walls <select value=${opt.wallStyle} onChange=${(e) => setO({ wallStyle: e.target.value })}>${styles.filter(([k]) => k.startsWith("wall") || k === "fence" || k === "hedge" || k === "iron-railing").map(([k, s]) => html`<option value=${k}>${s.name}</option>`)}</select></label>
+        room: html`<span class="row">Floor ${floorSelect(opt.floor, (v) => setO({ floor: v }), "Room floor")}</span>
+            <span class="row">Walls <${Pick} label="Walls" value=${opt.wallStyle} onChange=${(v) => setO({ wallStyle: v })} options=${styleChoices(styles.filter(([k]) => k.startsWith("wall") || k === "fence" || k === "hedge" || k === "iron-railing"))} /></span>
             <label class="row">Box size <input type="number" min="8" max="256" value=${opt.roomBox ?? CELL} style="width:64px" onChange=${(e) => setO({ roomBox: Math.max(8, +e.target.value) })} /> px</label>
             <span class="muted">Drag a rectangle. The room is an object: move it, resize it, rotate it (snapping off). Things placed in it move with it.</span>`,
-        text: html`<label class="row">Style <select value=${opt.textStyle} onChange=${(e) => setO({ textStyle: e.target.value })}>${Object.entries(TEXT_STYLES).map(([k, s]) => html`<option value=${k}>${s.name}</option>`)}</select></label>
+        text: html`<span class="row">Style <${Pick} label="Text style" value=${opt.textStyle} onChange=${(v) => setO({ textStyle: v })} options=${plainChoices(Object.entries(TEXT_STYLES).map(([k, st]) => [k, st.name]))} /></span>
             <span class="muted">Click to place, then type in the Selected panel.</span>`,
         pin: html`<span>${opt.pinLoc ? html`Placing <b>${opt.pinLoc.title}</b>` : data.children.length ? html`<span class="muted">Pick a sub-location in the Pins panel</span>` : html`<span class="muted">${data.location.title} has no sub-locations yet</span>`}</span>`,
         measure: html`<span class="muted">Drag to measure, in the map's units (set them in the Map panel).</span>`,
@@ -1560,7 +1698,7 @@ function Inspector({ selected, joinSelected, separateSelected, groupSize, canRot
         ${one && o.type === "text" && html`
             <textarea key=${o.id} autoFocus value=${o.text} onInput=${(e) => patchSel({ text: e.target.value })} style="font-family:inherit;min-height:70px" aria-label="Text" />
             <div class="field-grid">
-                <label class="field"><span>Style</span><select value=${o.style} onChange=${(e) => patchSel({ style: e.target.value, size: undefined })}>${Object.entries(TEXT_STYLES).map(([k, s]) => html`<option value=${k}>${s.name}</option>`)}</select></label>
+                <div class="field"><span>Style</span><${Pick} label="Text style" value=${o.style} onChange=${(v) => patchSel({ style: v, size: undefined })} options=${plainChoices(Object.entries(TEXT_STYLES).map(([k, st]) => [k, st.name]))} /></div>
                 <label class="field"><span>Size</span><input type="number" min="6" max="400" value=${o.size ?? TEXT_STYLES[o.style]?.size} onChange=${(e) => patchSel({ size: Number(e.target.value) })} /></label>
                 <label class="field"><span>Colour</span><input type="color" value=${o.color ?? TEXT_STYLES[o.style]?.color} onInput=${(e) => patchSel({ color: e.target.value })} /></label>
                 ${num("Rotation", "rot")}
@@ -1573,8 +1711,8 @@ function Inspector({ selected, joinSelected, separateSelected, groupSize, canRot
             <button class="small" onClick=${separateSelected}>Separate</button><span class="muted small-note">Ctrl+Shift+G</span></div>`}
         ${one && o.type === "room" && html`<${RoomFields} o=${o} patchSel=${patchSel} canRotate=${canRotateRoom} release=${() => releaseRoom(o)} />`}
         ${(o.type === "path" || o.type === "area") && one && html`<div class="field-grid">
-            ${o.type === "area" && html`<label class="field"><span>Fill</span><select value=${o.fill} onChange=${(e) => patchSel({ fill: e.target.value })}>${texOptions()}</select></label>`}
-            <label class="field"><span>${o.type === "area" ? "Edge" : "Style"}</span><select value=${o.style ?? "none"} onChange=${(e) => patchSel({ style: e.target.value === "none" ? null : e.target.value })}>${o.type === "area" && html`<option value="none">None</option>`}${styles.map(([k, s]) => html`<option value=${k}>${s.name}</option>`)}</select></label>
+            ${o.type === "area" && html`<div class="field"><span>Fill</span><${Pick} label="Fill" value=${o.fill} onChange=${(v) => patchSel({ fill: v })} options=${texChoices()} /></div>`}
+            <div class="field"><span>${o.type === "area" ? "Edge" : "Style"}</span><${Pick} label=${o.type === "area" ? "Area edge" : "Line style"} value=${o.style ?? "none"} onChange=${(v) => patchSel({ style: v === "none" ? null : v })} options=${styleChoices(styles, o.type === "area" ? [{ value: "none", label: "None" }] : [])} /></div>
             <label class="field"><span>Width ×</span><input type="number" min="0.2" max="6" step="0.1" value=${o.scale ?? 1} onChange=${(e) => patchSel({ scale: Number(e.target.value) })} /></label>
             <label class="row"><input type="checkbox" checked=${o.smooth ?? PATH_STYLES[o.style]?.smooth} onChange=${(e) => patchSel({ smooth: e.target.checked })} /> Smooth</label>
             ${o.type === "path" && html`<label class="row"><input type="checkbox" checked=${!!o.closed} onChange=${(e) => patchSel({ closed: e.target.checked })} /> Closed loop</label>`}
@@ -1592,8 +1730,7 @@ function Inspector({ selected, joinSelected, separateSelected, groupSize, canRot
             <button class="small" onClick=${() => order("bottom")}>To back</button>
             <${ConfirmButton} onConfirm=${removeSel}>Delete<//>
         </div>
-        ${doc.layers.length > 1 && html`<label class="field" style="margin-top:8px"><span>Move to layer</span><select value="" onChange=${(e) => e.target.value && toLayer(e.target.value)}>
-            <option value="">Choose…</option>${doc.layers.filter((l) => l.id !== doc.active).map((l) => html`<option value=${l.id}>${l.name}</option>`)}</select></label>`}
+        ${doc.layers.length > 1 && html`<div class="field" style="margin-top:8px"><span>Move to layer</span><${Pick} label="Move to layer" value="" placeholder="Choose…" onChange=${(v) => v && toLayer(v)} options=${plainChoices(doc.layers.filter((l) => l.id !== doc.active).map((l) => [l.id, l.name]))} /></div>`}
     </div>`;
 }
 
@@ -1605,8 +1742,8 @@ function RibbonFields({ o, patchSel }) {
         ? patchSel({ off: on ? [...off].filter((x) => x !== part) : [...off, part] })
         : patchSel({ extra: on ? [...extra, part] : [...extra].filter((x) => x !== part) });
     return html`<div class="field-grid">
-        <label class="field"><span>Kind</span><select value=${o.style} onChange=${(e) => patchSel({ style: e.target.value, off: [], extra: [], floor: undefined })}>${Object.entries(RIBBONS).map(([k, r]) => html`<option value=${k}>${r.name}</option>`)}</select></label>
-        <label class="field"><span>Base texture</span><select value=${floor ?? ""} onChange=${(e) => patchSel({ floor: e.target.value || null })}><option value="">None</option>${texOptions()}</select></label>
+        <div class="field"><span>Kind</span><${Pick} label="Track or strip" value=${o.style} onChange=${(v) => patchSel({ style: v, off: [], extra: [], floor: undefined })} options=${plainChoices(Object.entries(RIBBONS).map(([k, r]) => [k, r.name]))} /></div>
+        <div class="field"><span>Base texture</span><${Pick} label="Base texture" value=${floor ?? ""} onChange=${(v) => patchSel({ floor: v || null })} options=${texChoices([{ value: "", label: "None" }])} /></div>
         <label class="field"><span>Boxes across</span><input type="number" min="1" max="12" value=${o.cols ?? preset.cols} onChange=${(e) => patchSel({ cols: Math.max(1, +e.target.value) })} /></label>
         <label class="field"><span>Box size (px)</span><input type="number" min="8" max="256" value=${o.box ?? CELL} onChange=${(e) => patchSel({ box: Math.max(8, +e.target.value) })} /></label>
         <label class="row"><input type="checkbox" checked=${o.grid ?? true} onChange=${(e) => patchSel({ grid: e.target.checked })} /> Own grid</label>
@@ -1629,8 +1766,8 @@ function RoomFields({ o, patchSel, canRotate, release }) {
         <label class="field"><span>Height (boxes)</span><input type="number" min="1" max="200" value=${Math.round(o.h / B)} onChange=${(e) => resize(o.w, Math.max(1, +e.target.value) * B)} /></label>
         <label class="field"><span>Box size (px)</span><input type="number" min="8" max="256" value=${B} onChange=${(e) => patchSel({ box: Math.max(8, +e.target.value), cells: {} })} /></label>
         <label class="field"><span>Rotation</span><input type="number" step="10" value=${o.rot ?? 0} disabled=${!canRotate} title=${canRotate ? "" : "Turn snapping off to rotate rooms"} onChange=${(e) => patchSel({ rot: (((+e.target.value) % 360) + 360) % 360 })} /></label>
-        <label class="field"><span>Floor</span><select value=${o.floor ?? ""} onChange=${(e) => patchSel({ floor: e.target.value || null })}><option value="">None (see through)</option>${texOptions()}</select></label>
-        <label class="field"><span>Walls</span><select value=${o.wall ?? ""} onChange=${(e) => patchSel({ wall: e.target.value || null })}><option value="">None</option>${walls.map(([k, w]) => html`<option value=${k}>${w.name}</option>`)}</select></label>
+        <div class="field"><span>Floor</span><${Pick} label="Room floor" value=${o.floor ?? ""} onChange=${(v) => patchSel({ floor: v || null })} options=${texChoices([{ value: "", label: "None (see through)" }])} /></div>
+        <div class="field"><span>Walls</span><${Pick} label="Walls" value=${o.wall ?? ""} onChange=${(v) => patchSel({ wall: v || null })} options=${styleChoices(walls, [{ value: "", label: "None" }])} /></div>
         <label class="row"><input type="checkbox" checked=${o.grid ?? true} onChange=${(e) => patchSel({ grid: e.target.checked })} /> Own grid</label>
     </div>
     ${(o.shapes ?? []).length > 0 && html`<div class="row"><span class="muted">${(o.shapes ?? []).filter((x) => x.op === "add").length} added, ${(o.shapes ?? []).filter((x) => x.op === "sub").length} cut, ${(o.shapes ?? []).filter((x) => x.op === "open").length} openings</span>
@@ -1715,7 +1852,7 @@ function TextureModal({ edit, setEdit, custom, busy, onSave }) {
                         <h3>Texture</h3>
                         <div class="field-grid">
                             <label class="field"><span>Name</span><input value=${d.name} onInput=${(e) => set({ name: e.target.value })} /></label>
-                            <label class="field"><span>Based on</span><select value=${d.from} onChange=${(e) => set({ from: e.target.value })}>${texOptions()}</select></label>
+                            <div class="field"><span>Based on</span><${Pick} label="Based on" value=${d.from} onChange=${(v) => set({ from: v })} options=${texChoices()} /></div>
                         </div>
                         <button class="small" onClick=${() => set({ details: detailRows(d.from, custom) })}>Use the details of ${TEX[d.from]?.name ?? d.from}</button>
                     </section>
@@ -1744,7 +1881,7 @@ function TextureModal({ edit, setEdit, custom, busy, onSave }) {
                             </div>`; })}
                         </div>
                         <p class="muted small-note">Amounts under 1 are a chance per square (30% = roughly every third square).</p>
-                        <div class="row"><select value=${addKind} onChange=${(e) => setAddKind(e.target.value)} aria-label="Detail to add">${Object.entries(DETAILS).map(([k, x]) => html`<option value=${k}>${x.name}</option>`)}</select>
+                        <div class="row"><${Pick} label="Detail to add" value=${addKind} onChange=${setAddKind} options=${plainChoices(Object.entries(DETAILS).map(([k, x]) => [k, x.name]))} />
                             <button onClick=${() => set({ details: [...rows, { kind: addKind, n: (DETAILS[addKind]?.max ?? 10) > 10 ? 10 : 1, color: DETAIL_COLORS[addKind] ?? "#4b463f", size: 1, vary: 0.5, on: true }] })}>+ Add detail</button></div>
                     </section>
                 </div>
@@ -1802,7 +1939,7 @@ function MapSettings({ doc, commit, file }) {
     const [cols, rows] = [doc.width / CELL, doc.height / CELL];
     return html`<div class="map-settings field-grid">
         ${grid ? html`
-            <label class="field"><span>Default terrain</span><select value=${doc.terrain} onChange=${(e) => set({ terrain: e.target.value })}>${Object.entries(TERRAINS).map(([k, t]) => html`<option value=${k}>${t.name}</option>`)}</select></label>
+            <div class="field"><span>Default terrain</span><${Pick} label="Default terrain" value=${doc.terrain} onChange=${(v) => set({ terrain: v })} options=${Object.entries(TERRAINS).map(([k, t]) => ({ value: k, label: t.name, img: texPreviewUrl(t.floor ?? "void", TEX_CUSTOM) }))} /></div>
             <p class="muted small-note">Every square no layer paints shows the default terrain.</p>
             <label class="field"><span>Columns</span><input type="number" min="2" max="300" value=${cols} onChange=${(e) => set({ width: Math.max(2, +e.target.value) * CELL })} /></label>
             <label class="field"><span>Rows</span><input type="number" min="2" max="300" value=${rows} onChange=${(e) => set({ height: Math.max(2, +e.target.value) * CELL })} /></label>
@@ -1813,7 +1950,7 @@ function MapSettings({ doc, commit, file }) {
             <label class="row"><input type="checkbox" checked=${doc.autoJoin !== false} onChange=${(e) => set({ autoJoin: e.target.checked })} /> Rooms join when dragged together</label>
             <p class="muted small-note">Rooms still snap edge to edge when this is off; join them with Ctrl+G.</p>`
         : html`
-            <label class="field"><span>Background</span><select value=${doc.backdrop} onChange=${(e) => set({ backdrop: e.target.value })}>${Object.entries(BACKDROPS).map(([k, n]) => html`<option value=${k}>${n}</option>`)}</select></label>
+            <div class="field"><span>Background</span><${Pick} label="Background" value=${doc.backdrop} onChange=${(v) => set({ backdrop: v })} options=${Object.entries(BACKDROPS).map(([k, n]) => ({ value: k, label: n, img: texPreviewUrl(k, TEX_CUSTOM) }))} /></div>
             <label class="field"><span>Width (px)</span><input type="number" min="200" max="20000" step="100" value=${doc.width} onChange=${(e) => set({ width: +e.target.value })} /></label>
             <label class="field"><span>Height (px)</span><input type="number" min="200" max="20000" step="100" value=${doc.height} onChange=${(e) => set({ height: +e.target.value })} /></label>
             <label class="field"><span>${doc.units.per} px =</span><span class="row"><input type="number" min="0.01" step="any" value=${doc.units.amount} style="width:80px" onChange=${(e) => set({ units: { ...doc.units, amount: +e.target.value } })} />

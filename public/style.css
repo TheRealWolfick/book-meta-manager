@@ -540,3 +540,28 @@ button.on-chip { background: var(--text); color: var(--bg); }
 .folders button.link { background: none; border: none; padding: 2px 0; color: var(--text); cursor: pointer; text-align: left; }
 .folders button.link::before { content: "▸ "; color: var(--muted); }
 .folders button.link:hover { color: var(--accent); }
+
+/* pickers: a choice opens a modal instead of a <select> (map editor) */
+button.pick { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; text-align: left; padding: 4px 8px; }
+button.pick img { width: 20px; height: 20px; border-radius: 4px; flex: none; }
+button.pick > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-caret { color: var(--muted); font-size: 11px; margin-left: auto; }
+.field > button.pick { width: 100%; }
+.map-canvas:focus { outline: none; }
+.pick-back { z-index: 90; align-items: center; padding: 5vh 16px; }
+.modal.pick-modal { width: min(720px, 100%); max-height: 86vh; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+.pick-modal:focus { outline: none; }
+.pick-modal h3 { margin: 0; }
+.pick-search { width: 100%; }
+.pick-list { overflow-y: auto; min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 2px; }
+.pick-group { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 2px 0 6px; }
+.pick-items { display: flex; flex-direction: column; gap: 2px; }
+.pick-list.tiles .pick-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
+.pick-opt { display: flex; align-items: center; gap: 8px; text-align: left; background: var(--panel); border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; }
+.pick-list.tiles .pick-opt { flex-direction: column; align-items: stretch; padding: 6px; border-color: var(--line); }
+.pick-opt img { width: 100%; aspect-ratio: 2 / 1; object-fit: cover; border-radius: 5px; }
+.pick-svg { display: flex; justify-content: center; align-items: center; height: 40px; background: #d8d0bf; border-radius: 5px; } /* map-like ground, so dark and light styles both show */
+.pick-opt:hover { border-color: var(--accent); }
+.pick-opt.current { font-weight: 600; }
+.pick-opt.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.pick-foot { border-top: 1px solid var(--line); padding-top: 10px; }

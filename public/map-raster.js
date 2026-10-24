@@ -6,7 +6,7 @@
 // functions), so painting and encoding never hold up the page. The page only draws the sprite sheets (SVG needs
 // an <img>) and hands them over as bitmaps. Without workers or OffscreenCanvas everything is painted here instead.
 import {
-    CELL, TILE_PX, SHEET, spriteSheetSvg, textureLayerSvg, continuousPeriod, squarePicker, macroBlobs, MACRO_ALPHA,
+    CELL, TILE_PX, SHEET, spriteSheetSvg, textureLayerSvg, continuousPeriod, squarePicker, macroBlobs, MACRO_ALPHA, patchStrength,
     roomExtent, roomOutline, PATH_STYLES, ribbonPieces,
 } from "./map-core.js";
 
@@ -37,12 +37,14 @@ function mapPattern(ctx, img, sc, { angle = 0, k = 1 } = {}) {
     if (p?.setTransform) p.setTransform(new DOMMatrix().rotateSelf(angle).scaleSelf(k / sc));
     return p;
 }
-function drawPatches(ctx, x, y, w, h) {
+/** soft light and dark patches; k: patchStrength of the floor underneath */
+function drawPatches(ctx, x, y, w, h, k) {
     for (const b of macroBlobs(x, y, w, h)) {
+        if ((b.dark ? k.dark : k.light) <= 0) continue;
         ctx.save();
         ctx.translate(b.cx, b.cy); ctx.rotate((b.rot * Math.PI) / 180); ctx.scale(b.rx, b.ry);
         const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 1);
-        const c = b.dark ? `0,0,0` : `255,255,255`, a = b.dark ? MACRO_ALPHA.dark : MACRO_ALPHA.light;
+        const c = b.dark ? `0,0,0` : `255,255,255`, a = b.dark ? MACRO_ALPHA.dark * k.dark : MACRO_ALPHA.light * k.light;
         g.addColorStop(0, `rgba(${c},${a})`); g.addColorStop(1, `rgba(${c},0)`);
         ctx.fillStyle = g;
         ctx.fillRect(-1, -1, 2, 2);
@@ -88,13 +90,24 @@ export function drawFloorChunk({ x, y, S, px, terrain, entries, custom }, sp) {
     ctx.setTransform(lod, 0, 0, lod, -x * lod, -y * lod);
     ctx.imageSmoothingQuality = "high";
     const clip = () => { const p = new Path2D(); for (const [c, r] of cells) p.rect(c * CELL, r * CELL, CELL, CELL); ctx.clip(p); };
+    // patches as strong as each floor allows (light ones fade on dark floors), each kept to its own squares
+    const patches = () => {
+        if (terrain) return drawPatches(ctx, x, y, S, S, patchStrength(terrain, custom));
+        for (const id of ids) {
+            ctx.save();
+            const p = new Path2D(); for (const [c, r, f] of cells) if (f === id) p.rect(c * CELL, r * CELL, CELL, CELL);
+            ctx.clip(p);
+            drawPatches(ctx, x, y, S, S, patchStrength(id, custom));
+            ctx.restore();
+        }
+    };
     if (cellPx >= 12) {
         // every square on its own, its variation picked from its position
         const pick = squarePicker(custom);
         if (!terrain) { ctx.save(); clip(); }
         drawSquares(ctx, sp, cells.filter((q) => sp[q[2]]).map(([c, r, f]) => [c, r, f, pick(c, r, f)]), CELL);
-        if (lod >= 1 / 8) drawPatches(ctx, x, y, S, S);
         if (!terrain) ctx.restore();
+        if (lod >= 1 / 8) patches();
     } else {
         // far out: the texture's tile, plus the patches
         for (const id of ids) {
@@ -103,7 +116,7 @@ export function drawFloorChunk({ x, y, S, px, terrain, entries, custom }, sp) {
             if (terrain) ctx.fillRect(x, y, S, S);
             else { const p = new Path2D(); for (const [c, r, f] of cells) if (f === id) p.rect(c * CELL, r * CELL, CELL, CELL); ctx.fill(p); }
         }
-        if (lod >= 1 / 8) { ctx.save(); if (!terrain) clip(); drawPatches(ctx, x, y, S, S); ctx.restore(); }
+        if (lod >= 1 / 8) patches();
     }
     return cv;
 }
