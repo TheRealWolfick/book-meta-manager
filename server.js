@@ -1,4 +1,4 @@
-// Books meta viewer: browse and edit the Obsidian data store and novel ledgers in a web browser.
+// World Builder: browse and edit the Obsidian data store and novel ledgers in a web browser.
 // Usage: node server.js [--vault <path>] [--port 4321] [--host 127.0.0.1]
 import http from "node:http";
 import fs from "node:fs";
@@ -18,6 +18,7 @@ import { patchNote, trashNote } from "./lib/write.js";
 import { renderMarkdown } from "./lib/render.js";
 import { asCallout, renderTemplate } from "./lib/template.js";
 import { foldStock } from "./lib/ledger.js";
+import { Renamer } from "./lib/rename.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const arg = (name, def) => { const i = process.argv.indexOf(`--${name}`); return i > -1 ? process.argv[i + 1] : def; };
@@ -38,7 +39,7 @@ const VAULT_SOURCES = [["--vault", arg("vault")], ["settings", readSettings().va
 const startSource = VAULT_SOURCES.find(([, v]) => v);
 const isFolder = (p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 
-let vault = null, novels, blueprints, store, plans, stats, worlds;
+let vault = null, novels, blueprints, store, plans, stats, worlds, renamer;
 let vaultSource = null, vaultProblem = null, epoch = 0;
 const clients = new Set();
 const version = () => epoch * 1e9 + (vault?.version ?? 0);
@@ -55,6 +56,7 @@ async function openVault(dir, source) {
     plans = new Plans(vault, novels, store);
     stats = new Stats(vault, novels, store);
     worlds = new Worlds(vault, store);
+    renamer = new Renamer(vault, store, worlds);
     novels.sheetHook = (novel, owner, set) => stats.sheetValues(novel, owner, set);
     vault.on("change", broadcast);
     vault.watch();
@@ -151,6 +153,13 @@ const routes = {
     "POST /api/note": async ({ req }) => {
         const b = await json(req);
         return { path: await store.create(need(b.collection, "collection"), need(b.name, "name"), b.fm ?? {}, b.body ?? "") };
+    },
+    "GET /api/rename": ({ q }) => renamer.preview(need(q.get("path"), "path")),
+    "POST /api/rename": async ({ req }) => {
+        const b = await json(req);
+        const r = await renamer.rename({ path: need(b.path, "path"), name: b.name, title: b.title, baseMtime: b.baseMtime });
+        await plans.afterPatch(r.path);
+        return r;
     },
     "PATCH /api/note": async ({ req }) => {
         const b = await json(req);
@@ -430,5 +439,5 @@ if (startSource) {
     else { vaultProblem = `Vault folder not found: ${dir} (from ${source})`; console.error(`${vaultProblem}. Choose one on the Settings page.`); }
 } else console.error("No vault folder set yet. Choose one on the Settings page.");
 server.listen(PORT, HOST, () => {
-    console.log(`Books meta viewer: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}  (${vault ? `vault: ${vault.root}, ${vault.notes.size} notes` : "no vault yet: open Settings"})`);
+    console.log(`World Builder: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}  (${vault ? `vault: ${vault.root}, ${vault.notes.size} notes` : "no vault yet: open Settings"})`);
 });

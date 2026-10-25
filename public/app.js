@@ -1,4 +1,4 @@
-// Books meta viewer front end: Preact + htm, no build step.
+// World Builder front end: Preact + htm, no build step.
 import { h, render } from "preact";
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "preact/hooks";
 import htm from "htm";
@@ -179,6 +179,9 @@ document.addEventListener("click", (e) => {
     openInDrawer(a.getAttribute("href"));
 });
 addEventListener("keydown", (e) => { if (e.key === "Escape" && drawer.open && !document.querySelector(".lightbox")) collapseDrawer(); });
+
+// a renamed note's drawer page follows it
+function renameInDrawer(from, to) { if (drawer.recent.includes(from)) setDrawer({ ...drawer, recent: drawer.recent.map((h) => (h === from ? to : h)) }); }
 
 // a deleted note leaves the recent list; the drawer collapses when nothing is left
 function dropFromDrawer(href) {
@@ -387,14 +390,14 @@ function Sidebar({ index, novelFolder }) {
     const toggle = (id) => { const c = { ...closed, [id]: !closed[id] }; setClosed(c); store.set("sidebarClosed", c); };
     const [theme, setThemeState] = useState(store.get("theme", "system"));
     const setTheme = (m) => { setThemeState(m); store.set("theme", m); applyTheme(m); };
-    if (!index) return html`<nav class="sidebar"><div class="brand">Books Meta Viewer</div>
+    if (!index) return html`<nav class="sidebar"><div class="brand">World Builder</div>
         <div class="side-section"><a class=${active("#/settings")} href="#/settings"><span>Settings</span></a></div></nav>`;
     const cols = Object.keys(index.schema.collections);
     const main = cols.filter((c) => !c.startsWith("Taxonomy/"));
     const tax = cols.filter((c) => c.startsWith("Taxonomy/"));
     const section = (id, title, items) => html`<${SideSection} id=${id} title=${title} closed=${closed} toggle=${toggle}>${items}<//>`;
     return html`<nav class="sidebar">
-        <div class="brand"><a href="#/" style="padding:0">Books Meta Viewer</a></div>
+        <div class="brand"><a href="#/" style="padding:0">World Builder</a></div>
         ${section("novels", "Novels", index.novels.map((n) => html`<a class=${`novel-link ${n.folder === novelFolder ? "active" : ""}`} href=${`#/novel/${encodeURIComponent(n.folder)}`}>
             <span class="novel-dot" style=${`--dot:${novelColour(index, n.folder)}`} aria-hidden="true" /><span class="name">${n.name}</span><span class="count">${n.number}</span></a>`))}
         <a class=${`side-pill ${route0() === "world" || route0() === "map" ? "active" : ""}`} href="#/world">World builder<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18" /></svg></a>
@@ -436,7 +439,7 @@ function Home({ index }) {
     if (!index) return html`<${Loading} />`;
     const cols = Object.keys(index.schema.collections).filter((c) => !c.startsWith("Taxonomy/"));
     return html`<div>
-        <h1>Books Meta Viewer</h1>
+        <h1>World Builder</h1>
         <p class="muted">${index.notes.length} data store notes across ${cols.length} collections.</p>
         <div class="cards">
             ${cols.map((c) => html`<a class="card" href=${`#/c/${encodeURIComponent(c)}`}><div class="body"><h3>${c}</h3><p>${index.counts[c] ?? 0} entries</p></div></a>`)}
@@ -454,12 +457,21 @@ const HIDDEN_COLS = new Set(["title", "aliases", "type", "created-date", "tags",
 
 function CollectionView({ index, collection, novelFilter }) {
     const [q, setQ] = useState("");
-    const [filters, setFilters] = useState({});
+    // picked filter values, kept per collection in localStorage like the rest of the view's settings
+    const [filters, setFiltersNow] = useState(() => store.get(`filters:${collection}`, {}));
+    const setFilters = (fn) => setFiltersNow((f) => { const next = typeof fn === "function" ? fn(f) : fn; store.set(`filters:${collection}`, next); return next; });
     const [mode, setMode] = useState(store.get("viewMode", "table"));
     const [sort, setSort] = useState({ key: "name", dir: 1 });
     const [groupBy, setGroupBy] = useState(store.get(`groupBy:${collection}`, ""));
+    // filter groups hidden with the Filters dialog, and group tables folded away (per collection, in localStorage)
+    const [hiddenFacets, setHiddenFacets] = useState(() => store.get(`hiddenFacets:${collection}`, []));
+    const [picking, setPicking] = useState(false);
+    const [closedGroups, setClosedGroups] = useState(() => store.get(`groupsClosed:${collection}`, {}));
     const flip = useFlip();
-    useEffect(() => { setFilters({}); setQ(""); setGroupBy(store.get(`groupBy:${collection}`, "")); }, [collection]);
+    useEffect(() => {
+        setFiltersNow(store.get(`filters:${collection}`, {})); setQ(""); setGroupBy(store.get(`groupBy:${collection}`, ""));
+        setHiddenFacets(store.get(`hiddenFacets:${collection}`, [])); setClosedGroups(store.get(`groupsClosed:${collection}`, {}));
+    }, [collection]);
     if (!index) return html`<${Loading} />`;
     const col = index.schema.collections[collection];
     if (!col) return html`<p class="error">Unknown collection ${collection}</p>`;
@@ -468,20 +480,37 @@ function CollectionView({ index, collection, novelFilter }) {
     const values = (n, k) => asList(n.fm[k]).map((v) => (isLink(v) ? linkLabel(v) : String(v)));
     const base = all.filter((n) => !novelFilter || values(n, "novels").includes(novelFilter));
     const t = q.trim().toLowerCase();
+    // saved filter values only count while they exist (a value no longer in the collection would hide every row
+    // without a chip to switch it off)
+    const active = Object.entries(filters).map(([k, set]) => [k, set.filter((v) => base.some((n) => values(n, k).includes(v)))]);
     const passes = (n, skip) => {
         if (t && !`${n.name} ${n.fm.title ?? ""} ${n.fm.description ?? ""}`.toLowerCase().includes(t)) return false;
-        return Object.entries(filters).every(([k, set]) => k === skip || !set.length || values(n, k).some((v) => set.includes(v)));
+        return active.every(([k, set]) => k === skip || !set.length || values(n, k).some((v) => set.includes(v)));
     };
     const matches = base.filter((n) => passes(n));
     // Every value present in the collection stays listed in a fixed order (it never moves while filtering);
     // counts ignore the facet's own selection (values within a facet are OR-ed), so a 0 means picking it
     // would leave nothing and it is greyed out.
-    const facets = facetKeys.map((k) => {
+    const allFacets = facetKeys.map((k) => {
         const counts = new Map();
         for (const n of base) for (const v of values(n, k)) counts.set(v, 0);
         for (const n of base) if (passes(n, k)) for (const v of values(n, k)) counts.set(v, counts.get(v) + 1);
         return { key: k, values: [...counts.entries()].sort(([a], [b]) => compareValues(a, b, index)) };
     }).filter((f) => f.values.length > 1 || (filters[f.key]?.length));
+    const facets = allFacets.filter((f) => !hiddenFacets.includes(f.key));
+    // a hidden filter group stops filtering too, so nothing is filtered out of sight
+    const setHidden = (keys) => {
+        setHiddenFacets(keys); store.set(`hiddenFacets:${collection}`, keys);
+        setFilters((f) => Object.fromEntries(Object.entries(f).filter(([k]) => !keys.includes(k))));
+    };
+    const closed = new Set(closedGroups[groupBy] ?? []);
+    const toggleGroup = (g) => {
+        const next = closed.has(g) ? [...closed].filter((x) => x !== g) : [...closed, g];
+        const all2 = { ...closedGroups, [groupBy]: next };
+        setClosedGroups(all2); store.set(`groupsClosed:${collection}`, all2);
+    };
+    const groupHead = (g, n) => html`<h2><button class="group-toggle" aria-expanded=${!closed.has(g)} title=${closed.has(g) ? "Show this group" : "Hide this group"} onClick=${() => toggleGroup(g)}>
+        <span class="caret" aria-hidden="true">${closed.has(g) ? "▸" : "▾"}</span>${g} <span class="muted" style="font-size:13px">${n}</span></button></h2>`;
     const toggle = (k, v) => setFilters((f) => { const cur = f[k] ?? []; return { ...f, [k]: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] }; });
     const columns = col.fields.map(([k]) => k).filter((k) => !HIDDEN_COLS.has(k) && all.some((n) => asList(n.fm[k]).length && n.fm[k] !== false)).slice(0, 7);
     const groupKeys = [...new Set([...columns, ...facetKeys])];
@@ -507,6 +536,7 @@ function CollectionView({ index, collection, novelFilter }) {
             <h1>${collectionLabel(collection)} <span class="muted" style="font-size:14px">${matches.length} / ${base.length}</span></h1>
             <div class="row">
                 <input placeholder="Filter…" value=${q} onInput=${(e) => setQ(e.target.value)} />
+                ${allFacets.length > 0 && html`<button title="Choose which filter groups show" onClick=${() => setPicking(true)}>Filters${hiddenFacets.some((k) => allFacets.some((f) => f.key === k)) ? html` <span class="muted">(${facets.length}/${allFacets.length})</span>` : ""}</button>`}
                 <button onClick=${() => { const m = mode === "table" ? "cards" : "table"; setMode(m); store.set("viewMode", m); }}>${mode === "table" ? "Cards" : "Table"}</button>
                 <button class="primary" onClick=${() => go(`#/new/${encodeURIComponent(collection)}`)}>New</button>
             </div>
@@ -520,11 +550,30 @@ function CollectionView({ index, collection, novelFilter }) {
         </div>
         ${mode === "cards" ? html`
             <div class="groupbar row"><b>Group by</b>${groupKeys.map(groupBtn)}</div>
-            ${groups.map(([g, rows]) => html`<section class="group" key=${g ?? ""} data-flip=${`group|${g}`}>
-                ${g !== null && html`<h2>${g} <span class="muted" style="font-size:13px">${rows.length}</span></h2>`}
-                ${cards(rows, g)}</section>`)}`
+            ${groups.map(([g, rows]) => html`<section class=${`group ${g !== null && closed.has(g) ? "folded" : ""}`} key=${g ?? ""} data-flip=${`group|${g}`}>
+                ${g !== null && groupHead(g, rows.length)}
+                ${(g === null || !closed.has(g)) && cards(rows, g)}</section>`)}`
         : html`<${ColumnTables} id=${collection} cols=${["name", ...columns, "description"]} groups=${groups} sort=${sort} setSort=${setSort}
-            cell=${cell} groupBtn=${(k) => (groupKeys.includes(k) ? groupBtn(k) : null)} extraGroupKeys=${groupKeys.filter((k) => !columns.includes(k))} />`}
+            cell=${cell} groupBtn=${(k) => (groupKeys.includes(k) ? groupBtn(k) : null)} extraGroupKeys=${groupKeys.filter((k) => !columns.includes(k))}
+            closed=${closed} groupHead=${groupHead} />`}
+        ${picking && html`<${FacetPicker} facets=${allFacets} hidden=${hiddenFacets} onChange=${setHidden} onClose=${() => setPicking(false)} />`}
+    </div>`;
+}
+
+/** Which filter groups show above a collection's tables: a checkbox per group (hidden ones stop filtering too) */
+function FacetPicker({ facets, hidden, onChange, onClose }) {
+    useEffect(() => { const k = (e) => { if (e.key === "Escape") onClose(); }; addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
+    const shown = (k) => !hidden.includes(k);
+    const set = (k, on) => onChange(on ? hidden.filter((x) => x !== k) : [...hidden, k]);
+    return html`<div class="modal-back" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+        <div class="modal facet-picker" role="dialog" aria-label="Filter groups">
+            <div class="spread"><h2 style="margin:0">Filter groups</h2><button onClick=${onClose} aria-label="Close">×</button></div>
+            <p class="muted small-note">Choose which groups of filters show above the table. A hidden group stops filtering.</p>
+            <div class="facet-list">${facets.map((f) => html`<label class="row"><input type="checkbox" checked=${shown(f.key)} onChange=${(e) => set(f.key, e.target.checked)} />
+                <span>${f.key}</span><span class="muted">${f.values.length} value${f.values.length === 1 ? "" : "s"}</span></label>`)}</div>
+            <div class="spread"><div class="row"><button class="small" onClick=${() => onChange([])}>Show all</button><button class="small" onClick=${() => onChange(facets.map((f) => f.key))}>Hide all</button></div>
+                <button class="primary" onClick=${onClose}>Done</button></div>
+        </div>
     </div>`;
 }
 
@@ -538,7 +587,7 @@ const LAST_MIN_W = 220;
  * thin strip (click or hold to restore). Resized widths and hidden columns are kept in localStorage.
  * The last column takes the remaining width.
  */
-function ColumnTables({ id, cols, groups, sort, setSort, cell, groupBtn, extraGroupKeys }) {
+function ColumnTables({ id, cols, groups, sort, setSort, cell, groupBtn, extraGroupKeys, closed = new Set(), groupHead }) {
     const [userW, setUserW] = useState(() => store.get(`colWidths:${id}`, {}));
     const [measured, setMeasured] = useState({});
     const [hidden, setHidden] = useState(() => store.get(`colHidden:${id}`, []));
@@ -610,17 +659,22 @@ function ColumnTables({ id, cols, groups, sort, setSort, cell, groupBtn, extraGr
     const tableStyle = `table-layout:${measuring ? "auto" : "fixed"}`;
     const colgroup = html`<colgroup>${cols.map((k) => html`<col style=${width(k) != null ? `width:${width(k)}px` : ""} />`)}</colgroup>`;
     const td = (k, content) => html`<td class=${`${isHidden(k) ? "collapsed" : ""} ${k === "description" ? "desc" : ""}`}>${isHidden(k) ? "" : content}</td>`;
+    const firstOpen = groups.find(([g]) => g === null || !closed.has(g))?.[0];
     return html`<div class="coltables">
         <div class="panel groupbar-panel" style=${panelStyle}><table class="coltable" style=${tableStyle}>${colgroup}
             <tbody><tr class="groupbar">${cols.map((k, i) => td(k, i === 0 ? html`<b>Group by</b>` : k === last ? extraGroupKeys.map(groupBtn) : groupBtn(k)))}</tr></tbody>
         </table></div>
         ${isHidden(last) && extraGroupKeys.length > 0 && html`<div class="groupbar row">${extraGroupKeys.map(groupBtn)}</div>`}
-        ${groups.map(([g, rows], gi) => html`<section class="group" key=${g ?? ""} data-flip=${`group|${g}`}>
-            ${g !== null && html`<h2>${g} <span class="muted" style="font-size:13px">${rows.length}</span></h2>`}
-            <div class="panel" style=${panelStyle} data-drawer><table class="coltable" style=${tableStyle} ref=${gi === 0 ? first : null}>${colgroup}
+        ${groups.map(([g, rows]) => {
+            const folded = g !== null && closed.has(g);
+            // (widths are measured on the first table that is showing)
+            return html`<section class=${`group ${folded ? "folded" : ""}`} key=${g ?? ""} data-flip=${`group|${g}`}>
+            ${g !== null && (groupHead ? groupHead(g, rows.length) : html`<h2>${g} <span class="muted" style="font-size:13px">${rows.length}</span></h2>`)}
+            ${!folded && html`<div class="panel" style=${panelStyle} data-drawer><table class="coltable" style=${tableStyle} ref=${g === firstOpen ? first : null}>${colgroup}
                 <thead><tr>${cols.map(th)}</tr></thead>
                 <tbody>${rows.map((n) => html`<tr key=${n.path} data-flip=${`${g}|${n.path}`}>${cols.map((k) => td(k, cell(n, k)))}</tr>`)}</tbody>
-            </table></div></section>`)}
+            </table></div>`}</section>`;
+        })}
     </div>`;
 }
 
@@ -729,6 +783,49 @@ function Gallery({ images }) {
 const READONLY_KEYS = new Set(["type", "created-date", "facet"]);
 const isEmpty = (v) => v == null || v === "" || (Array.isArray(v) && !v.length);
 const sameValue = (a, b) => (isEmpty(coerce(a)) ? "" : JSON.stringify(coerce(a))) === (isEmpty(coerce(b)) ? "" : JSON.stringify(coerce(b)));
+
+/**
+ * Rename a note's file; every link to it in the vault follows (notes, map pins, canvases; a location's map file is
+ * renamed with it). The title is a separate field: `withTitle` shows it too (the world builder edits both).
+ * onDone({path, name}) after a change.
+ */
+function RenameDialog({ path: p, title: title0 = "", withTitle = false, onDone, onClose }) {
+    const { data: info, error } = useApi(`/api/rename?${qs({ path: p })}`);
+    const [name, setName] = useState(null);
+    const [title, setTitle] = useState(title0);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const ref = useRef();
+    useEffect(() => { if (info && name == null) { setName(info.name); setTimeout(() => { ref.current?.focus(); ref.current?.select(); }, 0); } }, [info]);
+    useEffect(() => { const k = (e) => { if (e.key === "Escape") onClose(); }; addEventListener("keydown", k); return () => removeEventListener("keydown", k); }, []);
+    const nameChanged = info && name != null && name.trim() !== info.name;
+    const titleChanged = withTitle && title.trim() !== title0;
+    const submit = async (e) => {
+        e.preventDefault();
+        if (busy || (!nameChanged && !titleChanged) || !name?.trim()) return;
+        setBusy(true); setErr("");
+        try {
+            const r = await api.send("POST", "/api/rename", { path: p, name: name.trim(), ...(titleChanged ? { title: title.trim() } : {}) });
+            const others = r.updated.length;
+            toast(r.renamed ? `Renamed to ${r.name}${others ? `; links updated in ${others} file${others === 1 ? "" : "s"}` : ""}` : "Saved");
+            onDone?.(r);
+        } catch (e2) { setErr(e2.message); }
+        setBusy(false);
+    };
+    return html`<div class="modal-back" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+        <form class="modal rename-modal" role="dialog" aria-label="Rename" onSubmit=${submit} onKeyDown=${(e) => { if (e.key === "Escape") onClose(); }}>
+            <div class="spread"><h2 style="margin:0">Rename</h2><button type="button" onClick=${onClose} aria-label="Close">×</button></div>
+            ${!info ? html`<p class="muted">${error ?? "Loading…"}</p>` : info.protected ? html`<p class="muted">${info.protected}.</p>` : html`
+                ${withTitle && html`<label class="field"><span>Title</span><input value=${title} onInput=${(e) => setTitle(e.target.value)} /></label>`}
+                <label class="field"><span>File name</span><input ref=${ref} value=${name ?? ""} onInput=${(e) => setName(e.target.value)} required /></label>
+                <p class="muted small-note">${withTitle ? "The title is what the app shows; the file name is what links use. " : "The title stays as it is. "}
+                    ${info.links ? `${info.links} note${info.links === 1 ? " links" : "s link"} here; their links follow the new name` : "No notes link here yet"}${info.pins ? `; pins on ${info.pins} map${info.pins === 1 ? "" : "s"} follow too` : ""}${info.map ? "; its map file is renamed with it" : ""}. File names must be unique in the vault.</p>`}
+            ${err && html`<p class="error">${err}</p>`}
+            <div class="row" style="justify-content:flex-end"><button type="button" onClick=${onClose}>Cancel</button>
+                ${info && !info.protected && html`<button type="submit" class="primary" disabled=${busy || (!nameChanged && !titleChanged) || !name?.trim()}>${busy ? "Renaming…" : "Rename"}</button>`}</div>
+        </form>
+    </div>`;
+}
 
 /** Frontmatter of any note as an always-editable form; only changed keys are patched */
 function FieldsEditor({ page, index, spec, scope, linkOptions }) {
@@ -845,6 +942,7 @@ function NoteView({ index, path, scope = "page" }) {
         "@plots": plan.plots.map((p) => ({ label: p.name, hint: p.title !== p.name ? p.title : p.rating?.title ?? "" })),
         "@characters": plan.characters.map((c) => ({ label: c.name })),
     }, [plan]);
+    const [renaming, setRenaming] = useState(false);
     if (!page) return html`<${Loading} error=${error} />`;
     const schema = index?.schema;
     const spec = page.plan?.spec ?? (page.collection ? schema?.collections[page.collection] : page.fm.type === "character" ? schema?.characters : null);
@@ -873,9 +971,19 @@ function NoteView({ index, path, scope = "page" }) {
             else go(page.collection ? `#/c/${encodeURIComponent(page.collection)}` : novel ? `#/novel/${encodeURIComponent(novel.folder)}` : "#/");
         } catch (e) { toast(e.message); }
     };
+    const renameable = deletable;
+    const renamed = (r) => {
+        setRenaming(false);
+        if (!r.renamed) return;
+        markDirty(scope, page.path, false);
+        if (scope === "drawer") renameInDrawer(noteHref(page.path), noteHref(r.path));
+        else location.replace(noteHref(r.path));
+    };
+    const startRename = () => { if (!dirtyForms.has(`${scope}:${page.path}`) || confirm("Renaming reloads this note. Discard unsaved changes?")) setRenaming(true); };
     const backlinks = Object.keys(page.backlinks).length > 0 && html`<div class="panel"><h3>Linked from</h3>${linkGroups(page.backlinks)}</div>`;
     const outlinks = Object.keys(page.outlinks ?? {}).length > 0 && html`<div class="panel"><h3>Links to</h3>${linkGroups(page.outlinks)}</div>`;
     return html`<div>
+        ${renaming && html`<${RenameDialog} path=${page.path} onDone=${renamed} onClose=${() => setRenaming(false)} />`}
         <div class="spread">
             <div>
                 <div class="muted">${page.collection ? html`<a href=${`#/c/${encodeURIComponent(page.collection)}`}>${collectionLabel(page.collection)}</a>` : page.path.split("/").slice(0, -1).join(" / ")}</div>
@@ -884,6 +992,7 @@ function NoteView({ index, path, scope = "page" }) {
             </div>
             <div class="row">
                 ${page.fm.type === "character" && novel && html`<button onClick=${() => go(`#/owner/${encodeURIComponent(novel.folder)}/${encodeURIComponent(page.name)}`)}>Ledgers</button>`}
+                ${renameable && html`<button title="Rename the file; links to it in the vault follow" onClick=${startRename}>Rename file</button>`}
                 ${deletable && html`<${ConfirmButton} class="" onConfirm=${del}
                     title=${`Move to the vault's .trash folder${linkedFrom ? `. ${linkedFrom} note${linkedFrom > 1 ? "s" : ""} link here and will show it as unresolved` : ""}${page.heldBy?.length ? ". Ledger lines still name it" : ""}`}>Delete<//>`}
             </div>
@@ -2173,4 +2282,4 @@ function App() {
 render(html`<${App} />`, document.getElementById("app"));
 
 // shared with world.js and map-editor.js (used only inside components, so the import cycle is safe)
-export { api, useApi, qs, toast, store, go, noteHref, linkLabel, isLink, asList, openInDrawer, ConfirmButton, markDirty, confirmDiscard, Loading, useRoute };
+export { api, useApi, qs, toast, store, go, noteHref, linkLabel, isLink, asList, openInDrawer, renameInDrawer, ConfirmButton, markDirty, confirmDiscard, Loading, useRoute, RenameDialog };

@@ -11,13 +11,13 @@ import {
     CELL, TERRAINS, BACKDROPS, PATH_STYLES, TEXT_STYLES, newMap, uid, viewLayers, layerSvg, backgroundSvg, gridSvg,
     textureCatalog, texturesDefs, texturePreview, resolveTexture, usedFloors, DETAILS, DETAIL_COLORS, detailRows, bounds, textureTileSvg, TILE_PX,
     floorSvg, moveObject, pathD, unitsPerPx, layerParts, objectSvg, sampleCurve, RIBBONS, RIBBON_PARTS,
-    toRoom, fromRoom, inRoom, worldRoom, allObjects, anchorOf, rehome, touchesBox, insideBox, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg, isWallShape, flipObject, turnObject, objectFloors, windowStampSrc, doorStamp, DOOR_MATERIALS, fitStampBox,
+    toRoom, fromRoom, inRoom, worldRoom, allObjects, anchorOf, rehome, touchesBox, insideBox, roomLookKey, roomInside, roomExtent, nearestWall, shapeSvg, isWallShape, flipObject, turnObject, objectFloors, roomWallStyle, windowStampSrc, doorStamp, DOOR_MATERIALS, fitStampBox,
 } from "./map-core.js";
 
 const html = htm.bind(h);
 // texture catalogue for menus (built-ins + derived textures); the editor refreshes it when the library loads
 let TEX = textureCatalog();
-const TEX_ORDER = ["Outdoor", "Street", "Water", "Indoor", "Carpet", "Roof", "Map", "My textures"];
+const TEX_ORDER = ["Outdoor", "Street", "Water", "Indoor", "Carpet", "Roof", "Facade", "Map", "My textures"];
 /** texture groups in menu order; groups not in TEX_ORDER come before "My textures", so none is ever left out */
 const texGroups = () => { const all = [...new Set(Object.values(TEX).map((f) => f.group))]; return [...TEX_ORDER.slice(0, -1), ...all.filter((g) => !TEX_ORDER.includes(g)), "My textures"].filter((g) => all.includes(g)); };
 let TEX_CUSTOM = {}; // the derived textures TEX was made from (for previews)
@@ -1027,7 +1027,7 @@ function Editor({ data }) {
                 if (!hit) return toast("Click on a room wall");
                 const { room, q, angle } = hit;
                 const B = room.box ?? CELL, len = opt.openLen * B;
-                const wall = PATH_STYLES[room.wall];
+                const wall = roomWallStyle(room);
                 const thick = (wall ? Math.max(...wall.layers.map((l) => l.w)) : 12) + 8;
                 const kind = opt.openKind;
                 if (kind === "wall") {
@@ -1208,7 +1208,7 @@ function Editor({ data }) {
                     [x0, y0, x1, y1] = [Math.min(c0, c1) * B, Math.min(r0, r1) * B, (Math.max(c0, c1) + 1) * B, (Math.max(r0, r1) + 1) * B];
                 }
                 if (x1 - x0 < 8 || y1 - y0 < 8) break;
-                const room = { id: uid(), type: "room", x: x0, y: y0, w: x1 - x0, h: y1 - y0, box: opt.roomBox ?? CELL, floor: opt.floor, wall: opt.wallStyle, grid: true, cells: {}, children: [] };
+                const room = { id: uid(), type: "room", x: x0, y: y0, w: x1 - x0, h: y1 - y0, box: opt.roomBox ?? CELL, floor: opt.floor, wall: opt.wallStyle, ...(opt.wallScale && opt.wallScale !== 1 ? { wallScale: opt.wallScale } : {}), grid: true, cells: {}, children: [] };
                 // things already standing inside (in the same room, or on the map) become part of the new room
                 let d = addTo(dr.d0, holder?.id, [room]);
                 const placed = worldRoom(room, holder);
@@ -1264,6 +1264,10 @@ function Editor({ data }) {
     useEffect(() => { const clear = () => held.current.clear(); addEventListener("blur", clear); return () => removeEventListener("blur", clear); }, []);
 
     // ---------------------------------------------------------------- pins
+    // which sub-locations can be pinned: down to the map's pin depth (1 = its own sub-locations, 2 = theirs too…,
+    // 0 = all); `data.children` holds every level, so pins placed deeper still open and keep their names
+    const pinDepth = doc.pinDepth ?? 1;
+    const pinnable = data.children.filter((c) => !pinDepth || c.depth <= pinDepth);
     const placedPins = new Map(doc.layers.flatMap((l) => entriesOf(l.objects).filter((e) => e.o.type === "pin").map((e) => [linkName(e.o.location).toLowerCase(), { o: e.o, layer: l }])));
     const placePin = (child, p) => {
         if (!child) return toast("Pick a sub-location in the Pins panel first");
@@ -1274,13 +1278,13 @@ function Editor({ data }) {
         const drop = (os) => os.filter((o) => o.id !== have.o.id).map((o) => (o.type === "room" && o.children?.length ? { ...o, children: drop(o.children) } : o));
         if (have) d = { ...d, layers: d.layers.map((l) => (l === have.layer ? { ...l, objects: drop(l.objects) } : l)) };
         commit(addObjects([{ ...(have?.o ?? { id: uid(), type: "pin", location: `[[${child.name}]]` }), x: p[0], y: p[1] }], d));
-        const next = data.children.find((c) => c.name !== child.name && !placedPins.has(c.name.toLowerCase()));
+        const next = pinnable.find((c) => c.name !== child.name && !placedPins.has(c.name.toLowerCase()));
         setO({ pinLoc: next ?? null });
         if (!next) setTool("select");
     };
     const openPin = (o) => {
         const c = data.children.find((x) => x.name.toLowerCase() === linkName(o.location).toLowerCase());
-        if (!c) return toast(`${linkName(o.location)} is not a sub-location of ${loc.title}`);
+        if (!c) return toast(`${linkName(o.location)} is not inside ${loc.title}`);
         if (c.hasMap) go(mapHref(c.path)); else openInDrawer(noteHref(c.path));
     };
 
@@ -1384,7 +1388,13 @@ function Editor({ data }) {
     const removeSel = () => { if (locked()) return; commit(mapDeep(docRef.current, (o) => (sel.includes(o.id) ? null : o))); setSel([]); };
     /** Copies with new ids (rooms' contents too). Rooms stay joined only to rooms copied with them: a join that also
      * held rooms left behind is dropped, so a copy never joins the originals. */
+    /** objects without pins (inside rooms too): a pin belongs to one location on one map, so copies, pastes and
+     * blueprints never carry them */
+    const withoutPins = (objs) => objs.filter((o) => o.type !== "pin").map((o) => (o.type === "room" && o.children?.length ? { ...o, children: withoutPins(o.children) } : o));
+    const pinsIn = (objs) => allObjects(objs).filter((o) => o.type === "pin").length;
+    const pinNote = (objs) => { const n = pinsIn(objs); if (n) toast(`${n === 1 ? "The pin wasn't" : `${n} pins weren't`} copied: each location has one pin per map`); };
     const freshCopies = (objs) => {
+        objs = withoutPins(objs);
         const count = new Map();
         for (const o of allObjects(objs)) if (o.type === "room" && o.group) count.set(o.group, (count.get(o.group) ?? 0) + 1);
         const groups = new Map([...count].filter(([, n]) => n > 1).map(([g]) => [g, `g${uid()}`]));
@@ -1412,6 +1422,8 @@ function Editor({ data }) {
             if (grid && doc.snap) { dx = Math.round(dx / CELL) * CELL; dy = Math.round(dy / CELL) * CELL; }
         }
         const copies = freshCopies(clip.current).map((o) => moveObject(o, dx, dy));
+        pinNote(clip.current);
+        if (!copies.length) return;
         commit(addObjects(copies));
         setSel(copies.map((o) => o.id));
     };
@@ -1448,7 +1460,7 @@ function Editor({ data }) {
     /** the selection as a blueprint, with copies of the derived textures it uses */
     const blueprintOfSel = () => {
         const carried = carriedBy(docRef.current, sel);
-        const n = normalized(selEntries.filter((x) => !carried.has(x.o.id)).map((x) => (x.room ? rehome(x.o, x.room, null) : x.o)));
+        const n = normalized(withoutPins(selEntries.filter((x) => !carried.has(x.o.id)).map((x) => (x.room ? rehome(x.o, x.room, null) : x.o))));
         const need = new Set();
         const add = (id) => { if (customTex[id] && !need.has(id)) { need.add(id); add(customTex[id].from); } };
         objectFloors(n.objects, customTex).forEach(add);
@@ -1491,7 +1503,9 @@ function Editor({ data }) {
     const pickBlueprint = async (entry) => {
         try {
             const { blueprint: bp } = await api.get(`/api/map-blueprint?file=${encodeURIComponent(entry.file)}`);
-            setHand({ file: entry.file, name: entry.name, category: entry.category, textures: bp.textures ?? {}, ...normalized(bp.objects) });
+            // (blueprints saved before pins were left out may still hold some)
+            if (!withoutPins(bp.objects).length) return toast(`${entry.name} only holds pins, which blueprints don't place`);
+            setHand({ file: entry.file, name: entry.name, category: entry.category, textures: bp.textures ?? {}, ...normalized(withoutPins(bp.objects)) });
             setTool("blueprint");
         } catch (e) { toast(e.message); }
     };
@@ -1523,7 +1537,9 @@ function Editor({ data }) {
         if (!selected.length || locked()) return;
         let d = docRef.current;
         const ids = [], carried = carriedBy(d, sel);
-        const picked = selEntries.filter(({ o }) => !carried.has(o.id));
+        pinNote(selEntries.filter(({ o }) => !carried.has(o.id)).map(({ o }) => o));
+        const picked = selEntries.filter(({ o }) => !carried.has(o.id) && o.type !== "pin");
+        if (!picked.length) return;
         const copies = freshCopies(picked.map(({ o }) => o));
         for (const [i, { room }] of picked.entries()) {
             const off = room ? room.box ?? CELL : grid ? CELL : 20;
@@ -1608,7 +1624,12 @@ function Editor({ data }) {
             { label: "Paste here", keys: "Ctrl+V", run: () => pasteAt(at), off: !clip.current.length },
             { label: "Duplicate", keys: "Ctrl+D", run: duplicate },
             selected.some(canFit) && { label: "Fit box to picture", run: fitSel },
-            { label: "Add blueprint…", run: () => { const one = selected.length === 1 ? selected[0] : null; setBpSave({ bp: blueprintOfSel(), name: one?.name ?? (one?.type === "room" ? "Room" : ""), category: hand?.category ?? "General" }); } },
+            { label: "Add blueprint…", run: () => {
+                const bp = blueprintOfSel();
+                if (!bp.objects.length) return toast("Nothing to save: pins aren't saved in blueprints");
+                const one = selected.length === 1 ? selected[0] : null;
+                setBpSave({ bp, name: one?.name ?? (one?.type === "room" ? "Room" : ""), category: hand?.category ?? "General" });
+            } },
             "-",
             { label: "Flip left to right", keys: "Shift+H", run: () => flipSel("h") },
             { label: "Flip top to bottom", keys: "Shift+V", run: () => flipSel("v") },
@@ -1939,7 +1960,7 @@ function Editor({ data }) {
                     ${panel === "textures" && html`<${TexturePanel} lib=${texLib} setLib=${setTexLib} custom=${customTex} opt=${opt} setO=${setO} grid=${grid} useFloor=${(id) => { setO({ floor: id }); setTool(grid ? "floor" : "area"); if (!grid) setO({ areaFill: id }); }} />`}
                     ${panel === "inspect" && html`<${Inspector} selected=${selected} joinSelected=${joinSelected} separateSelected=${separateSelected} groupSize=${(g) => active.objects.filter((o) => o.type === "room" && o.group === g).length} canRotateRoom=${canRotateRoom()} releaseRoom=${releaseRoom} patchSel=${patchSel} flipSel=${flipSel} removeSel=${removeSel} duplicate=${duplicate} order=${order} doc=${doc} toLayer=${toLayer} grid=${grid} names=${names} />`}
                     ${panel === "layers" && html`<${LayersPanel} doc=${doc} commit=${commit} setSel=${setSel} />`}
-                    ${panel === "pins" && html`<${PinsPanel} data=${data} placed=${placedPins} opt=${opt} setO=${setO} setTool=${setTool} onOpen=${(c) => (c.hasMap ? go(mapHref(c.path)) : openInDrawer(noteHref(c.path)))} />`}
+                    ${panel === "pins" && html`<${PinsPanel} data=${data} placed=${placedPins} opt=${opt} setO=${setO} setTool=${setTool} depth=${pinDepth} setDepth=${(d) => commit({ ...docRef.current, pinDepth: d })} onOpen=${(c) => (c.hasMap ? go(mapHref(c.path)) : openInDrawer(noteHref(c.path)))} />`}
                     ${panel === "map" && html`<${MapSettings} doc=${doc} commit=${commit} file=${data.file} />`}
                 </div>
             </aside>
@@ -1997,6 +2018,7 @@ function ToolOptions({ tool, opt, setO, grid, draft, finishDraft, data, hand }) 
             <span class="muted">Drag to paint, Shift-drag fills a rectangle, Alt or right button erases (back to the default terrain).</span>`,
         room: html`<span class="row">Floor ${floorSelect(opt.floor, (v) => setO({ floor: v }), "Room floor")}</span>
             <span class="row">Walls <${Pick} label="Walls" value=${opt.wallStyle} onChange=${(v) => setO({ wallStyle: v })} options=${styleChoices(styles.filter(([k]) => k.startsWith("wall") || k === "fence" || k === "hedge" || k === "iron-railing"))} /></span>
+            <label class="row">Thickness ×<${Draft} type="number" min="0.25" max="8" step="0.25" value=${opt.wallScale ?? 1} style="width:64px" onChange=${(e) => setO({ wallScale: Math.max(0.25, Math.min(8, +e.target.value || 1)) })} /></label>
             <label class="row">Box size <${Draft} type="number" min="8" max="256" value=${opt.roomBox ?? CELL} style="width:64px" onChange=${(e) => setO({ roomBox: Math.max(8, +e.target.value) })} /> px</label>
             <span class="muted">Drag a rectangle. The room is an object: move it, resize it, rotate it (snapping off). Things placed in it move with it.</span>`,
         text: html`<span class="row">Style <${Pick} label="Text style" value=${opt.textStyle} onChange=${(v) => setO({ textStyle: v })} options=${plainChoices(Object.entries(TEXT_STYLES).map(([k, st]) => [k, st.name]))} /></span>
@@ -2283,6 +2305,8 @@ function RoomFields({ o, patchSel, canRotate, release }) {
         <label class="field"><span>Rotation</span><${Draft} type="number" step="10" value=${o.rot ?? 0} disabled=${!canRotate} title=${canRotate ? "" : "Turn snapping off to rotate rooms"} onChange=${(e) => patchSel({ rot: (((+e.target.value) % 360) + 360) % 360 })} /></label>
         <div class="field"><span>Floor</span><${Pick} label="Room floor" value=${o.floor ?? ""} onChange=${(v) => patchSel({ floor: v || null })} options=${texChoices([{ value: "", label: "None (see through)" }])} /></div>
         <div class="field"><span>Walls</span><${Pick} label="Walls" value=${o.wall ?? ""} onChange=${(v) => patchSel({ wall: v || null })} options=${styleChoices(walls, [{ value: "", label: "None" }])} /></div>
+        <label class="field"><span>Wall thickness ×</span><${Draft} type="number" min="0.25" max="8" step="0.25" value=${o.wallScale ?? 1} disabled=${!o.wall}
+            title="Multiplies the wall style's thickness (1 = as drawn in the style)" onChange=${(e) => { const k = Math.max(0.25, Math.min(8, +e.target.value || 1)); patchSel({ wallScale: k === 1 ? undefined : k }); }} /></label>
         <label class="row"><input type="checkbox" checked=${o.grid ?? true} onChange=${(e) => patchSel({ grid: e.target.checked })} /> Own grid</label>
     </div>
     ${(o.shapes ?? []).length > 0 && html`<div class="row"><span class="muted">${(o.shapes ?? []).filter((x) => x.op === "add").length} added, ${(o.shapes ?? []).filter((x) => x.op === "sub").length} cut, ${(o.shapes ?? []).filter((x) => x.op === "open").length} openings, ${(o.shapes ?? []).filter((x) => x.op === "wall").length} wall pieces</span>
@@ -2434,12 +2458,17 @@ function LayersPanel({ doc, commit, setSel }) {
 
 // ------------------------------------------------------------------ pins
 
-function PinsPanel({ data, placed, opt, setO, setTool, onOpen }) {
+function PinsPanel({ data, placed, opt, setO, setTool, onOpen, depth, setDepth }) {
     if (!data.children.length) return html`<p class="muted">${data.location.title} has no sub-locations yet. Add them in the world builder outline, then pin them here.</p>`;
+    const deepest = Math.max(...data.children.map((c) => c.depth));
+    // the levels this map pins, plus anything deeper that is already pinned
+    const list = data.children.filter((c) => !depth || c.depth <= depth || placed.has(c.name.toLowerCase()));
     return html`<div class="pins-panel">
         <p class="muted small-note">Pins are saved in this map. Click Place (or drag a name onto the map), then click where it goes.</p>
-        ${data.children.map((c) => { const p = placed.get(c.name.toLowerCase()); return html`<div class=${`pin-row ${opt.pinLoc?.path === c.path ? "on" : ""}`} draggable="true" onDragStart=${(e) => e.dataTransfer.setData("application/x-map-pin", c.path)}>
-            <span><b>${c.title}</b> <span class="muted">${c.scale}</span> ${p ? html`<span class="badge ok">${p.layer.name}</span>` : html`<span class="badge warn">not placed</span>`}</span>
+        ${deepest > 1 && html`<div class="row pin-depth"><span>Pin depth</span><div class="seg" role="group" aria-label="Pin depth">${[...Array.from({ length: Math.min(deepest, 4) }, (_, i) => i + 1), ...(deepest > 4 ? [0] : [])].map((d) => html`<button class=${depth === d ? "on" : ""} aria-pressed=${depth === d}
+            title=${d === 1 ? "Only its own sub-locations" : d === 0 ? "Every level below" : `${d} levels down (e.g. rooms on a building's floors)`} onClick=${() => setDepth(d)}>${d || "All"}</button>`)}</div></div>`}
+        ${list.map((c) => { const p = placed.get(c.name.toLowerCase()); return html`<div class=${`pin-row ${opt.pinLoc?.path === c.path ? "on" : ""}`} style=${`--depth:${c.depth - 1}`} draggable="true" onDragStart=${(e) => e.dataTransfer.setData("application/x-map-pin", c.path)}>
+            <span><b>${c.title}</b> <span class="muted">${c.scale}${c.via.length ? ` · in ${c.via.join(" › ")}` : ""}</span> ${p ? html`<span class="badge ok">${p.layer.name}</span>` : html`<span class="badge warn">not placed</span>`}</span>
             <span class="row"><button class="small" onClick=${() => { setO({ pinLoc: c }); setTool("pin"); }}>${p ? "Move" : "Place"}</button>
                 <button class="small" onClick=${() => onOpen(c)}>${c.hasMap ? "Its map" : "Note"}</button></span>
         </div>`; })}

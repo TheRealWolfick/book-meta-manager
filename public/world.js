@@ -2,7 +2,7 @@
 import { h } from "preact";
 import { useState, useEffect, useMemo, useRef } from "preact/hooks";
 import htm from "htm";
-import { api, useApi, qs, toast, store, go, noteHref, openInDrawer, Loading } from "./app.js";
+import { api, useApi, qs, toast, store, go, noteHref, openInDrawer, renameInDrawer, Loading, RenameDialog } from "./app.js";
 
 const html = htm.bind(h);
 
@@ -76,6 +76,7 @@ function Outline({ data, world, worlds }) {
     const [filter, setFilter] = useState("");
     const [drag, setDrag] = useState(null); // {path, over, zone}
     const [moving, setMoving] = useState(null);
+    const [renaming, setRenaming] = useState(null); // location being renamed (title and file name)
     const selNode = tree.byPath.get(sel) ?? null;
 
     // rows in tree order; filtering shows matches with their ancestors
@@ -121,6 +122,7 @@ function Outline({ data, world, worlds }) {
         else if (e.key === "Enter" && sel) openInDrawer(noteHref(sel));
         else if ((e.key === "a" || e.key === "+") && sel) { e.preventDefault(); setAdding(sel); }
         else if (e.key === "m" && selNode) { e.preventDefault(); setMoving(selNode); }
+        else if (e.key === "F2" && selNode) { e.preventDefault(); setRenaming(selNode); }
     };
 
     return html`<div class="world-outline">
@@ -165,6 +167,7 @@ function Outline({ data, world, worlds }) {
                             <span class="loc-acts">
                                 <button class="small" title="Add a sub-location" aria-label=${`Add a sub-location to ${n.title}`} onClick=${() => { setAdding(n.path); setC(new Set([...closed].filter((c) => c !== n.path))); }}>+</button>
                                 <button class="small" title="Move to…" aria-label=${`Move ${n.title}`} onClick=${() => setMoving(n)}>Move</button>
+                                <button class="small" title="Rename (F2): title and file name; links follow" aria-label=${`Rename ${n.title}`} onClick=${() => setRenaming(n)}>Rename</button>
                                 <a class="small-link" href=${mapHref(n.path)} title=${n.map ? "Open map" : "Create a map"}>Map</a>
                             </span>
                         </div>
@@ -173,10 +176,12 @@ function Outline({ data, world, worlds }) {
                 })}
                 ${drag && html`<div class="loc-row drop-root" onDragOver=${(e) => e.preventDefault()} onDrop=${(e) => { e.preventDefault(); const node = tree.byPath.get(drag.path); setDrag(null); if (node?.parent) doMove(node, null); }}>Drop here for the top level</div>`}
             </div>
-            <p class="muted small-note">Drag a row onto another to move it inside (top or bottom edge: next to it). Keys: ↑↓ select, ←→ fold, A add, M move, Enter opens the note.</p>
+            <p class="muted small-note">Drag a row onto another to move it inside (top or bottom edge: next to it). Keys: ↑↓ select, ←→ fold, A add, M move, F2 rename, Enter opens the note.</p>
         </section>
-        ${selNode ? html`<${LocationDetail} node=${selNode} tree=${tree} scales=${data.scales} onSelect=${select} onAdd=${() => setAdding(selNode.path)} onMove=${() => setMoving(selNode)} />`
+        ${selNode ? html`<${LocationDetail} node=${selNode} tree=${tree} scales=${data.scales} onSelect=${select} onAdd=${() => setAdding(selNode.path)} onMove=${() => setMoving(selNode)} onRename=${() => setRenaming(selNode)} />`
             : html`<section class="panel loc-detail"><p class="muted">Select a location to see it here.</p></section>`}
+        ${renaming && html`<${RenameDialog} path=${renaming.path} title=${renaming.title} withTitle=${true} onClose=${() => setRenaming(null)}
+            onDone=${(r) => { setRenaming(null); renameInDrawer(noteHref(renaming.path), noteHref(r.path)); if (sel === renaming.path) select(r.path); }} />`}
         ${moving && html`<${MoveDialog} node=${moving} tree=${tree} data=${data} world=${world} worlds=${worlds} onClose=${() => setMoving(null)} onMove=${(parent, w) => { setMoving(null); doMove(moving, parent, w); }} />`}
     </div>`;
 }
@@ -216,7 +221,7 @@ function AddRow({ depth, parent, world, scales, onDone, onAdded }) {
     </div>`;
 }
 
-function LocationDetail({ node, tree, scales, onSelect, onAdd, onMove }) {
+function LocationDetail({ node, tree, scales, onSelect, onAdd, onMove, onRename }) {
     const kids = tree.kids(node.path);
     return html`<section class="loc-detail">
         <div class="panel">
@@ -232,6 +237,7 @@ function LocationDetail({ node, tree, scales, onSelect, onAdd, onMove }) {
             <div class="row">
                 <button onClick=${() => openInDrawer(noteHref(node.path))}>Open note</button>
                 <button onClick=${onMove}>Move to…</button>
+                <button onClick=${onRename}>Rename</button>
                 <button onClick=${() => go(mapHref(node.path))}>${node.map ? "Open map" : "Create map"}</button>
             </div>
             ${node.map && html`<a href=${mapHref(node.path)} class="map-thumb"><img src=${`/files/${node.map.split("/").map(encodeURIComponent).join("/")}?v=${node.mtime}`} alt=${`Map of ${node.title}`} loading="lazy" /></a>`}

@@ -1,4 +1,4 @@
-# Books Meta Viewer
+# World Builder
 
 A local web app for writing novels in an [Obsidian](https://obsidian.md) vault. It browses and edits a shared worldbuilding database (items, materials, creatures, factions, locations…), tracks each novel's characters through chapter-based ledgers (inventory, journal, stats, relationships) whose entries you paste into chapters as callouts, plans books chapter by chapter, and builds worlds and maps.
 
@@ -23,8 +23,8 @@ All data stays in the vault as markdown. There is no database: the app reads the
 ## Installation
 
 ```sh
-git clone https://github.com/TheRealWolfick/book-meta-manager.git
-cd book-meta-manager
+git clone https://github.com/TheRealWolfick/world-builder.git
+cd world-builder
 npm install
 
 # a new vault, or the missing pieces of an existing one (never overwrites anything)

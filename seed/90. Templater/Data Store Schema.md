@@ -9,7 +9,7 @@ Single source of truth for the fields of every collection in the `80. Global Dat
 - **fields** — `[key, default]` in the order they are written. Adding a field here makes `applySchema` add it to new notes, and `Data Store Maintenance` add it (empty) to existing notes.
 - **links** — which folder a link-valued field points at. Used for pick lists and the QA check for values that don't resolve to a note.
 - **label** — the suffix used when a file name must be made unique, e.g. `Excellent (Rating)`.
-- **characters** — fields for character sheets in each novel's `Characters` folder (used by the books meta viewer). `generated` fields are written by the viewer from ledgers; edit those through ledger entries.
+- **characters** — fields for character sheets in each novel's `Characters` folder (used by World Builder). `generated` fields are written by the app from ledgers; edit those through ledger entries.
 - **plans** — fields of each novel's plan notes (volumes in `Plan/Book Plan`, chapter plans in `Plan/Chapter Plans`, plots in `Plots`). Link targets starting with `@` are folders of the novel itself. Plan text lives in frontmatter (`plan`, `plot`) so bases can show it.
 
 Edit the JSON below. Keep it valid JSON (double quotes, no trailing commas).

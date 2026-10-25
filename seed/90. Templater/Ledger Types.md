@@ -86,7 +86,7 @@ ledger-types:
         {{eventLink}}
 ---
 # Ledger Types
-Shared ledger type definitions used by the books meta viewer (`~/Projects/books-meta-viewer`). Each novel can add types or override any part of a type (behaviour, fields, callouts) under `ledger-types` in its own `config.md` frontmatter.
+Shared ledger type definitions used by World Builder. Each novel can add types or override any part of a type (behaviour, fields, callouts) under `ledger-types` in its own `config.md` frontmatter.
 
 - **behaviour**: `stock` (quantities add up), `log` (ordered entries), or `state` (fields set over time).
 - **callouts**: chapter callout templates. An entry chooses one with `callout:: <name>`; otherwise `default-callout` is used. Lookup order: novel variant, novel default, shared variant, shared default.

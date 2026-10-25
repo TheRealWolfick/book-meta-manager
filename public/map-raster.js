@@ -7,7 +7,7 @@
 // an <img>) and hands them over as bitmaps. Without workers or OffscreenCanvas everything is painted here instead.
 import {
     CELL, TILE_PX, SHEET, spriteSheetSvg, textureLayerSvg, continuousPeriod, squarePicker, macroBlobs, MACRO_ALPHA, patchStrength,
-    roomExtent, roomOutline, roomWalls, isWallShape, PATH_STYLES, ribbonPieces,
+    roomExtent, roomOutline, roomWalls, isWallShape, roomWallStyle, PATH_STYLES, ribbonPieces,
 } from "./map-core.js";
 
 const IN_PAGE = typeof document !== "undefined";
@@ -125,7 +125,7 @@ export function drawFloorChunk({ x, y, S, px, terrain, entries, custom }, sp) {
 const dashOf = (d) => (d ? String(d).split(/[ ,]+/).map(Number).filter((n) => !Number.isNaN(n)) : []);
 function roomBox(o) {
     const e = roomExtent(o);
-    const wall = PATH_STYLES[o.wall];
+    const wall = roomWallStyle(o);
     const ww = wall ? Math.max(...wall.layers.map((l) => l.w)) : 0;
     const pad = ww / 2 + 2;
     return { e, wall, ww, box: { x: Math.floor(e.x - pad), y: Math.floor(e.y - pad), w: Math.ceil(e.w + pad * 2) + 1, h: Math.ceil(e.h + pad * 2) + 1 } };

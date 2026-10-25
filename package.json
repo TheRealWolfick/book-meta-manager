@@ -1,5 +1,5 @@
 {
-  "name": "books-meta-viewer",
+  "name": "world-builder",
   "version": "1.0.0",
   "private": true,
   "description": "Local web app for novels in an Obsidian vault: worldbuilding data store, chapter ledgers, plans, world and map builder",
@@ -22,6 +22,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/TheRealWolfick/book-meta-manager.git"
+    "url": "https://github.com/TheRealWolfick/world-builder.git"
   }
 }

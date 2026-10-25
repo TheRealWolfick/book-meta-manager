@@ -1,4 +1,4 @@
-// Seed a vault with the structure Books Meta Viewer needs: the data store schema and ledger types, every collection
+// Seed a vault with the structure World Builder needs: the data store schema and ledger types, every collection
 // folder, and a basic taxonomy (rarity, item condition, ratings, location scales, units, genres, elements…).
 // Optionally scaffolds a novel and a world. Never overwrites: anything that already exists is left alone.
 //
@@ -93,7 +93,7 @@ if (novelName) {
     if (!fs.existsSync(path.join(ROOT, folder, "config.md"))) {
         say(`add ${folder}/config.md`);
         if (!DRY) await createNote(vault, `${folder}/config.md`, { type: "config", blueprints: false, "contains-system": false },
-            "Settings for this novel (Books Meta Viewer and Templater read the frontmatter).\n");
+            "Settings for this novel (World Builder and Templater read the frontmatter).\n");
     }
     await addNote("Taxonomy/Novels", novelName, { type: "novel", facet: "Novels", folder });
 }

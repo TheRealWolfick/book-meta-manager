@@ -2,7 +2,7 @@
 # for this device (vault folder, port, host), this repo's location and this machine's node. The vault folder can
 # also be chosen on the app's Settings page (saved in ~/.config/books-meta-viewer/settings.json, which wins).
 [Unit]
-Description=Books Meta Viewer (Obsidian data store and ledgers)
+Description=World Builder (Obsidian worldbuilding data store, ledgers and maps)
 After=default.target
 
 [Service]

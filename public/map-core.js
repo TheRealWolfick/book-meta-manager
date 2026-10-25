@@ -204,6 +204,91 @@ const TILE_STRUCTURES = {
         }
         return s;
     } },
+    // ---- building faces (front views: rows run left to right, as a wall stands)
+    clapboard: { period: 12, draw: (r, c, P) => {
+        // overlapping weatherboards: each board its own shade, a shadow under each lap, butt joints here and there
+        let s = "", joints = "", laps = "", tops = "";
+        for (let y = 0; y < P; y += 12) {
+            let x = r() * P;
+            for (const w of runs(r, P, 192, 640)) { s += wrapRect(P, x % P, y, w, 12, `fill="${c(c.base, r() * 0.06 - 0.03)}"`); joints += `M${n1(x % P)} ${y}v12`; x += w; }
+            laps += `M0 ${y + 11}H${P}`; tops += `M0 ${y + 1}H${P}`;
+        }
+        return s + `<path d="${laps}" stroke="${c(c.line)}" stroke-width="2.2"/><path d="${tops}" stroke="${c(c.base, 0.08)}" stroke-width="1"/><path d="${joints}" stroke="${c(c.line)}" stroke-width="1"/>`;
+    } },
+    battens: { period: 6, draw: (r, c, P) => {
+        // vertical boards with narrow battens over the seams
+        let s = "", bat = "";
+        for (let x = 0; x < P; x += 16) { s += `<rect x="${x}" y="0" width="16" height="${P}" fill="${c(c.base, r() * 0.07 - 0.035)}"/>`; bat += `M${x} 0V${P}`; }
+        return s + `<path d="${bat}" stroke="${c(c.base, 0.06)}" stroke-width="4"/><path d="${bat.replace(/M(\d+) /g, (m, x) => `M${+x + 2.5} `)}" stroke="${c(c.line)}" stroke-width="1.2"/>`;
+    } },
+    brickwork: { period: 6, draw: (r, c, P) => {
+        // facade-scale bricks in stretcher bond (16 × 6 px, a pixel of mortar); the texture colour is the mortar
+        let s = "";
+        for (let y = 0, row = 0; y < P; y += 6, row++) for (let x0 = 0; x0 < P; x0 += 16) s += wrapRect(P, (x0 + (row % 2) * 8) % P, y, 15, 5, `fill="${c(c.stone, r() * 0.16 - 0.08)}"`);
+        return s;
+    } },
+    ashlar: { period: 6, draw: (r, c, P) => {
+        // dressed stone blocks in courses of 16 or 24 px, joints in a light mortar
+        let s = "", y = 0;
+        for (const h of runs(r, P, 16, 24, 8)) {
+            let x = r() * P;
+            for (const w of runs(r, P, 32, 72, 8)) { s += wrapRect(P, x % P, y, w, h, `fill="${c(c.stone, r() * 0.08 - 0.04)}" stroke="${c(c.line)}" stroke-width="1.2"`); x += w; }
+            y += h;
+        }
+        return s;
+    } },
+    rubble: { period: 6, draw: (r, c, P) => {
+        // rough stones of mixed sizes set in mortar (the texture colour)
+        let s = "";
+        for (let y = 0; y < P; y += 12) {
+            let x = r() * P;
+            for (const w of runs(r, P, 12, 30)) {
+                const h = 9 + r() * 6, oy = y + r() * 3 - 1.5;
+                s += wrapRect(P, (x + 1) % P, oy, w - 2, h, `rx="${n1(3 + r() * 3)}" fill="${c(c.stone, r() * 0.18 - 0.09)}" stroke="${c(c.line)}" stroke-width=".8"`);
+                x += w;
+            }
+        }
+        return s;
+    } },
+    timberframe: { period: 6, draw: (r, c, P) => {
+        // half-timbering: posts every square, rails every two squares, and a brace or two in some bays
+        let infill = "", beams = "";
+        for (let y = 0; y < P; y += 128) for (let x = 0; x < P; x += 64) {
+            infill += `<rect x="${x + 4}" y="${y + 4}" width="56" height="120" fill="${c(c.base, r() * 0.05 - 0.025)}"/>`;
+            const kind = Math.floor(r() * 5);
+            if (kind === 1) beams += `M${x + 4} ${y + 124}L${x + 60} ${y + 4}`;
+            else if (kind === 2) beams += `M${x + 4} ${y + 4}L${x + 60} ${y + 124}`;
+            else if (kind === 3) beams += `M${x + 4} ${y + 4}L${x + 60} ${y + 124}M${x + 60} ${y + 4}L${x + 4} ${y + 124}`;
+            else if (kind === 4) beams += `M${x + 4} ${y + 64}H${x + 60}`;
+        }
+        let frame = "";
+        for (let x = 0; x < P; x += 64) frame += `M${x} 0V${P}`;
+        for (let y = 0; y < P; y += 128) frame += `M0 ${y}H${P}`;
+        return infill + `<path d="${beams}" stroke="${c(c.line)}" stroke-width="5"/><path d="${frame}" stroke="${c(c.line)}" stroke-width="8"/>`;
+    } },
+    logs: { period: 6, draw: (r, c, P) => {
+        // horizontal logs: rounded with a highlight on top and shadow beneath, a knot now and then
+        let s = "";
+        for (let y = 0; y < P; y += 14) {
+            s += `<rect x="0" y="${y}" width="${P}" height="14" fill="${c(c.base, r() * 0.08 - 0.04)}"/><path d="M0 ${y + 3}H${P}" stroke="${c(c.base, 0.1)}" stroke-width="2" opacity=".7"/><path d="M0 ${y + 13}H${P}" stroke="${c(c.line)}" stroke-width="2.4"/>`;
+            for (let i = 0, n = Math.floor(r() * 3); i < n; i++) s += `<ellipse cx="${n1(r() * P)}" cy="${y + 7}" rx="2.2" ry="1.6" fill="${c(c.line, 0.05)}" opacity=".8"/>`;
+        }
+        return s;
+    } },
+    panels: { period: 6, draw: (r, c, P) => {
+        // precast concrete panels with joints and form-tie holes
+        let s = "", holes = "", y = 0;
+        for (const h of runs(r, P, 48, 96, 48)) {
+            let x = Math.floor(r() * P / 32) * 32;
+            for (const w of runs(r, P, 96, 192, 32)) {
+                s += wrapRect(P, x % P, y, w, h, `fill="${c(c.base, r() * 0.06 - 0.03)}" stroke="${c(c.line)}" stroke-width="1.6"`);
+                for (const [dx, dy] of [[10, 10], [w - 10, 10], [10, h - 10], [w - 10, h - 10]]) holes += `<circle cx="${n1((x + dx) % P)}" cy="${y + dy}" r="1.6" fill="${c(c.line, -0.05)}" opacity=".7"/>`;
+                x += w;
+            }
+            y += h;
+        }
+        return s + holes;
+    } },
 };
 
 // generated detail: draw(rng, count, colour fn, colour, S = size, V = colour variation; 1 = normal) -> markup in one 64×64 square
@@ -304,6 +389,28 @@ export const TEXTURES = {
     "roof-felt": { name: "Felt (flat roof)", group: "Roof", color: "#3d3d42", structure: "rolls", line: "#2a2a2e", vary: 0.25, details: [["pebbles", 6, "#6e6a62"], ["puddles", 0.15, "#5d7580"], ["stains", 0.4, "#2f2f33"]] },
     "roof-lead": { name: "Lead (flat roof)", group: "Roof", color: "#7d8590", structure: "rolls", line: "#5e6570", vary: 0.25, details: [["stains", 0.5, "#9aa3ad"]] },
     "roof-gravel": { name: "Gravel roof", group: "Roof", color: "#77736b", vary: 0.25, details: [["pebbles", 20, "#8d877f"], ["pebbles", 9, "#5f5b55"], ["puddles", 0.1, "#5d7580"]] },
+    // building faces: for drawing a building from the front (rows run as a wall stands)
+    "facade-weatherboard": { name: "Weatherboard (white)", group: "Facade", color: "#e6e1d6", structure: "clapboard", line: "#a39d8f", vary: 0.25, details: [["stains", 0.12, "#c9c3b5"]] },
+    "facade-weatherboard-blue": { name: "Weatherboard (blue)", group: "Facade", color: "#7f9db1", structure: "clapboard", line: "#4f6a7d", vary: 0.3, details: [["stains", 0.12, "#6c889b"]] },
+    "facade-weatherboard-grey": { name: "Weatherboard (weathered)", group: "Facade", color: "#9c9a93", structure: "clapboard", line: "#686660", vary: 0.45, details: [["stains", 0.3, "#85837c"], ["cracks", 0.15, "#5f5d57"]] },
+    "facade-battens": { name: "Board and batten (barn red)", group: "Facade", color: "#8e3b30", structure: "battens", line: "#5e2620", vary: 0.35, details: [["stains", 0.25, "#7a3229"]] },
+    "facade-battens-timber": { name: "Board and batten (timber)", group: "Facade", color: "#a77c4f", structure: "battens", line: "#6e5032", vary: 0.4, details: [["knots", 0.4, "#6e5032"], ["stains", 0.2, "#8a6640"]] },
+    "facade-brick": { name: "Brickwork (red)", group: "Facade", color: "#b8ad9b", structure: "brickwork", stone: "#9b4a35", line: "#7a3a2a", vary: 0.35, details: [["stains", 0.2, "#7a3a2a"]] },
+    "facade-brick-yellow": { name: "Brickwork (yellow stock)", group: "Facade", color: "#d8cfbd", structure: "brickwork", stone: "#c7a668", line: "#9a7f48", vary: 0.35, details: [["stains", 0.25, "#a68a55"]] },
+    "facade-brick-sooty": { name: "Brickwork (sooty)", group: "Facade", color: "#857d72", structure: "brickwork", stone: "#5e4136", line: "#3f2c25", vary: 0.4, details: [["soot", 0.5, "#2f2a26"], ["stains", 0.3, "#4a3a32"]] },
+    "facade-ashlar": { name: "Ashlar stone", group: "Facade", color: "#d6cdb9", structure: "ashlar", stone: "#cfc5ae", line: "#a39a86", vary: 0.3, details: [["stains", 0.2, "#b8ae98"], ["moss", 0.04, "#7d8f5a"]] },
+    "facade-ashlar-grey": { name: "Ashlar (granite)", group: "Facade", color: "#a6a6a1", structure: "ashlar", stone: "#9a9a95", line: "#6c6c68", vary: 0.3, details: [["speckle", 10, "#8a8a85"], ["stains", 0.2, "#86867f"]] },
+    "facade-rubble": { name: "Rubble stone", group: "Facade", color: "#b5ad9d", structure: "rubble", stone: "#8f8676", line: "#5f584d", vary: 0.45, details: [["moss", 0.1, "#6f8a52"], ["stains", 0.2, "#7d7568"]] },
+    "facade-render": { name: "Render (cream)", group: "Facade", color: "#e9dfc9", vary: 0.25, details: [["speckle", 10, "#ddd2ba"], ["stains", 0.2, "#d4c8ae"]] },
+    "facade-render-pink": { name: "Render (pastel pink)", group: "Facade", color: "#e6c8bf", vary: 0.25, details: [["speckle", 10, "#dcbcb2"], ["stains", 0.2, "#d3b1a6"]] },
+    "facade-render-grey": { name: "Render (grey, aged)", group: "Facade", color: "#b9b6ae", vary: 0.4, details: [["speckle", 12, "#a9a69e"], ["stains", 0.5, "#9a978f"], ["cracks", 0.25, "#7d7a73"], ["soot", 0.15, "#5a5752"]] },
+    "facade-timber-frame": { name: "Timber frame", group: "Facade", color: "#ece2cc", structure: "timberframe", line: "#3a2a1e", vary: 0.2, details: [["stains", 0.15, "#d6cbb2"]] },
+    "facade-logs": { name: "Log wall", group: "Facade", color: "#8f6640", structure: "logs", line: "#5a3c24", vary: 0.35, details: [["scratches", 0.3, "#6e4e30"]] },
+    "facade-concrete": { name: "Concrete panels", group: "Facade", color: "#aaa9a4", structure: "panels", line: "#7d7c77", vary: 0.25, details: [["stains", 0.3, "#94938e"], ["speckle", 6, "#9c9b96"]] },
+    "facade-glass": { name: "Glass curtain wall", group: "Facade", color: "#6f8f9f", structure: "glass", stone: "#86a8b8", line: "#3a4650", vary: 0.3, details: [] },
+    "facade-corrugated": { name: "Corrugated cladding (green)", group: "Facade", color: "#5f7a62", structure: "corrugated", stone: "#6f8f72", line: "#3f5442", vary: 0.3, details: [["rust", 0.08, "#8a4a26"]] },
+    "facade-metal": { name: "Metal cladding", group: "Facade", color: "#6f7880", structure: "seam", stone: "#7d8790", line: "#4a5158", vary: 0.25, details: [["stains", 0.15, "#636b72"]] },
+    "facade-hung-tiles": { name: "Hung tiles", group: "Facade", color: "#a5583e", structure: "rooftiles", stone: "#b0603f", line: "#6e3524", vary: 0.35, details: [["moss", 0.06, "#6f8a52"]] },
     parchment: { name: "Parchment", group: "Map", color: "#efe6cf", vary: 0.15, details: [["stains", 1, "#e2d5b5"], ["speckle", 8, "#e3d6b8"]] },
     sea: { name: "Sea", group: "Map", color: "#b9cfd2", vary: 0.1, details: [["ripples", 1.5, "#9db8bc"]] },
     "map-forest": { name: "Forest (map)", group: "Map", color: "#c9d3a8", vary: 0.15, details: [["map-trees", 6, "#6d8a4c"]] },
@@ -1015,7 +1122,7 @@ export function roomBase(o) {
     }
     s += shaped ? `<g mask="url(#${mid}a)">${floor}</g>` : floor;
     // walls follow the outline of that area, left out where openings are
-    const wall = PATH_STYLES[o.wall];
+    const wall = roomWallStyle(o);
     const outline = shaped ? roomOutline(o).d : `M0 0H${n1(o.w)}V${n1(o.h)}H0Z`;
     const ww = wall ? Math.max(...wall.layers.map((l) => l.w)) : 0;
     if (wall) {
@@ -1028,7 +1135,14 @@ export function roomBase(o) {
     return { defs, body: s, outline, floors, box: { x: Math.floor(e.x - pad), y: Math.floor(e.y - pad), w: Math.ceil(e.w + pad * 2) + 1, h: Math.ceil(e.h + pad * 2) + 1 } };
 }
 /** What decides a room's bitmap (not its position or angle, so moving and turning it reuse the image) */
-export const roomLookKey = (o) => JSON.stringify([o.id, o.w, o.h, o.box, o.floor, o.wall, o.grid, o.cells, o.shapes]);
+export const roomLookKey = (o) => JSON.stringify([o.id, o.w, o.h, o.box, o.floor, o.wall, o.wallScale, o.grid, o.cells, o.shapes]);
+/** A room's wall style with its thickness applied (`wallScale` multiplies every layer's width; null without walls) */
+export function roomWallStyle(o) {
+    const w = PATH_STYLES[o.wall];
+    const k = o.wallScale ?? 1;
+    if (!w || k === 1) return w ?? null;
+    return { ...w, layers: w.layers.map((l) => ({ ...l, w: l.w * k })) };
+}
 /** A room's base drawing as a stand-alone SVG (for one bitmap); textures from `custom` */
 export function roomBaseSvg(o, custom = {}, scale = 2) {
     const b = roomBase(o);

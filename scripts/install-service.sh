@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install (or update) Books Meta Viewer as a systemd user service on this device.
+# Install (or update) World Builder as a systemd user service on this device.
 #   sh scripts/install-service.sh [--vault /path/to/Obsidian/books] [--port 4321] [--host 127.0.0.1] [--dry-run]
 # Port and host go into the installed unit (~/.config/systemd/user/books-meta-viewer.service); the vault folder goes
 # there too and into the app's settings (~/.config/books-meta-viewer/settings.json, also set on its Settings page).
@@ -50,4 +50,4 @@ printf '%s\n' "$UNITTEXT" > "$UNIT"
 systemctl --user daemon-reload
 systemctl --user enable books-meta-viewer >/dev/null 2>&1 || true
 systemctl --user restart books-meta-viewer
-echo "Books Meta Viewer: http://$HOST:$PORT (vault: ${VAULT:-choose on the Settings page})"
+echo "World Builder: http://$HOST:$PORT (vault: ${VAULT:-choose on the Settings page})"
