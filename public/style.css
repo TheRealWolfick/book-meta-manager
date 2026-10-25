@@ -145,6 +145,9 @@ tr:hover td { background: var(--panel-2); }
 .lines-editor td { padding: 3px 4px; }
 .lines-editor input, .lines-editor select { width: 100%; }
 .picker { position: relative; }
+.link-single { display: flex; gap: 4px; align-items: center; }
+.link-single .picker { flex: 0 1 auto; min-width: 0; }
+.link-clear { padding: 2px 8px; line-height: 1.2; }
 .picker .results { top: 32px; }
 .toast { position: fixed; bottom: 18px; right: 18px; background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; z-index: 60; }
 .error { color: var(--bad); }

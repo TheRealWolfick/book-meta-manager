@@ -6,7 +6,7 @@ import { api, useApi, qs, toast, store, go, noteHref, openInDrawer, Loading } fr
 
 const html = htm.bind(h);
 
-// scale rank -> colour group: land (realm…region), polity (multinational…province), settlement (city…district), site (estate…room)
+// scale rank -> colour group: land (realm…region), polity (multinational…province), settlement (city…district), site (estate…room: building, floor, apartment)
 const scaleGroup = (rank) => (rank <= 3 ? "land" : rank <= 6 ? "polity" : rank <= 10 ? "settle" : "site");
 const ScaleBadge = ({ node }) => node.scale ? html`<span class=${`scale-badge sg-${scaleGroup(node.rank)}`}>${node.scale}</span>` : html`<span class="scale-badge">no scale</span>`;
 const worldHref = (world, tab) => `#/world/${encodeURIComponent(world ?? "-")}${tab && tab !== "outline" ? `?tab=${tab}` : ""}`;
@@ -182,7 +182,9 @@ function Outline({ data, world, worlds }) {
 }
 
 function AddRow({ depth, parent, world, scales, onDone, onAdded }) {
-    const next = parent ? scales.find((s) => s.rank > parent.rank)?.name ?? parent.scale : scales[0]?.name ?? "";
+    // a sub-location is always a smaller scale than its parent (a parent without a known scale allows any)
+    const allowed = parent && parent.rank < 99 ? scales.filter((s) => s.rank > parent.rank) : scales;
+    const next = allowed[0]?.name ?? "";
     const [name, setName] = useState("");
     const [scale, setScale] = useState(next);
     const [busy, setBusy] = useState(false);
@@ -200,13 +202,17 @@ function AddRow({ depth, parent, world, scales, onDone, onAdded }) {
         setBusy(false);
         ref.current?.focus();
     };
+    if (!allowed.length) return html`<div class="add-row" style=${`--depth:${depth}`}>
+        <span class="muted">${parent.title} is a ${parent.scale}, the smallest scale, so nothing can go inside it.</span>
+        <button onClick=${onDone}>Close</button>
+    </div>`;
     return html`<div class="add-row" style=${`--depth:${depth}`}>
         <input ref=${ref} value=${name} placeholder=${parent ? `New location inside ${parent.title}` : "New top-level location"} aria-label="Name of the new location"
             onInput=${(e) => setName(e.target.value)} onKeyDown=${(e) => { if (e.key === "Enter") add(); if (e.key === "Escape") onDone(); }} />
-        <select value=${scale} onChange=${(e) => setScale(e.target.value)} aria-label="Scale">${scales.map((s) => html`<option value=${s.name}>${s.title}</option>`)}</select>
+        <select value=${scale} onChange=${(e) => setScale(e.target.value)} aria-label="Scale">${allowed.map((s) => html`<option value=${s.name}>${s.title}</option>`)}</select>
         <button class="primary" disabled=${busy || !name.trim()} onClick=${add}>Add</button>
         <button onClick=${onDone}>Done</button>
-        <span class="muted small-note">Enter adds it and starts the next one; the scale starts one step below the parent.</span>
+        <span class="muted small-note">Enter adds it and starts the next one; the scale starts one step below the parent${parent ? ", and only smaller scales than it can be chosen" : ""}.</span>
     </div>`;
 }
 
@@ -309,7 +315,7 @@ function Atlas({ data }) {
                     <div class="row">${tree.kids(s.path).length > 0 && html`<button onClick=${() => setRoot(s.path)}>Zoom in</button>`}<button onClick=${() => openInDrawer(noteHref(s.path))}>Open note</button><button onClick=${() => go(mapHref(s.path))}>${s.map ? "Open map" : "Create map"}</button></div>`
                 : html`<p class="muted">Click a box to see it, double-click to zoom in.</p>`}
                 <h4 style="margin-top:14px">Scale colours</h4>
-                <div class="legend"><span class="sg-land">realm · continent · region</span><span class="sg-polity">multinational · nation · province</span><span class="sg-settle">city · town · village · district</span><span class="sg-site">estate · building · room</span></div>
+                <div class="legend"><span class="sg-land">realm · continent · region</span><span class="sg-polity">multinational · nation · province</span><span class="sg-settle">city · town · village · district</span><span class="sg-site">estate · building · floor · apartment · room</span></div>
             </aside>
         </div>
     </div>`;

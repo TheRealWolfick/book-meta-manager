@@ -162,8 +162,18 @@
     "description": "A single building or hall."
    },
    {
-    "title": "room",
+    "title": "floor",
     "class": 13,
+    "description": "A storey or level of a building."
+   },
+   {
+    "title": "apartment",
+    "class": 14,
+    "description": "An apartment, flat or suite of rooms on one floor."
+   },
+   {
+    "title": "room",
+    "class": 15,
     "description": "A room or chamber."
    }
   ]

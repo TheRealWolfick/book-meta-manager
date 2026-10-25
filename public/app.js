@@ -308,7 +308,7 @@ function Loading({ error }) {
 }
 
 /** Text input with suggestions; picks one value */
-function Picker({ value, options, onChange, placeholder, allowFree = true, onCreate, createLabel = "Create", autoFocus }) {
+function Picker({ value, options, onChange, placeholder, allowFree = true, onCreate, createLabel = "Create", autoFocus, onClear }) {
     const [text, setText] = useState(value ?? "");
     const [open, setOpen] = useState(false);
     const [hl, setHl] = useState(0);
@@ -320,7 +320,11 @@ function Picker({ value, options, onChange, placeholder, allowFree = true, onCre
     }, [text, options]);
     const exact = options.some((o) => o.label.toLowerCase() === text.trim().toLowerCase());
     const choose = (o) => { onChange(o); setText(o ? o.label : ""); setOpen(false); };
-    const commitFree = () => { if (allowFree && text.trim() && text !== value) onChange({ label: text.trim(), free: true }); };
+    // typed text is taken when the field is left; an emptied field clears it (`onClear`)
+    const commitFree = () => {
+        if (!text.trim()) { if (onClear && value) onClear(); return; }
+        if (allowFree && text !== value) onChange({ label: text.trim(), free: true });
+    };
     return html`<div class="picker">
         <input value=${text} placeholder=${placeholder} autoFocus=${autoFocus}
             onInput=${(e) => { setText(e.target.value); setOpen(true); setHl(0); }}
@@ -343,12 +347,14 @@ function LinkField({ value, multiple, target, index, onChange, options: given })
     const computed = useMemo(() => (given ? null : ((target ? index?.inCollection(target) : index?.notes) ?? []).map((n) => ({ label: n.name, hint: n.fm.title !== n.name ? n.fm.title : "" }))), [index, target, given]);
     const options = given ?? computed;
     const values = asList(value);
+    // the picker shows what the field holds again (a typed name that was not taken must not look saved)
+    const [shown, setShown] = useState(0);
     const add = async (o) => {
         if (!o) return;
         let name = o.label;
         // "@plots" style targets are novel folders: free text just links by name
         if (o.free && !index.resolve(name) && target && !target.startsWith("@")) {
-            if (!confirm(`Create “${name}” in ${collectionLabel(target)}?`)) return;
+            if (!confirm(`Create “${name}” in ${collectionLabel(target)}?`)) { setShown((n) => n + 1); return; }
             const r = await api.send("POST", "/api/note", { collection: target, name });
             name = r.path.split("/").pop().replace(/\.md$/, "");
         }
@@ -356,7 +362,9 @@ function LinkField({ value, multiple, target, index, onChange, options: given })
     };
     return html`<div>
         ${multiple && html`<div>${values.map((v) => html`<${Chip} value=${v} index=${index} onRemove=${() => onChange(values.filter((x) => x !== v))} />`)}</div>`}
-        <${Picker} value=${multiple ? "" : linkLabel(value ?? "")} options=${options} onChange=${add} placeholder=${target ? `Search ${collectionLabel(target.replace(/^@/, ""))}…` : "Search notes…"} />
+        <div class="link-single"><${Picker} key=${shown} value=${multiple ? "" : linkLabel(value ?? "")} options=${options} onChange=${add} onClear=${multiple ? undefined : () => onChange("")}
+            placeholder=${target ? `Search ${collectionLabel(target.replace(/^@/, ""))}…` : "Search notes…"} />
+        ${!multiple && value && html`<button type="button" class="small link-clear" title="Clear" aria-label="Clear" onClick=${() => onChange("")}>×</button>`}</div>
     </div>`;
 }
 
