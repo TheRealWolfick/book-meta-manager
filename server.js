@@ -154,6 +154,8 @@ const routes = {
         const b = await json(req);
         return { path: await store.create(need(b.collection, "collection"), need(b.name, "name"), b.fm ?? {}, b.body ?? "") };
     },
+    "POST /api/recipe": async ({ req }) => { const b = await json(req); return store.createRecipe({ ...b, item: need(b.item, "item") }); },
+    "GET /api/recipe/compare": ({ q }) => ({ recipes: store.compareRecipes(need(q.get("item"), "item")) }),
     "GET /api/rename": ({ q }) => renamer.preview(need(q.get("path"), "path")),
     "POST /api/rename": async ({ req }) => {
         const b = await json(req);

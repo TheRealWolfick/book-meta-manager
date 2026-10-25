@@ -154,6 +154,7 @@ tr:hover td { background: var(--panel-2); }
 .warnbox { background: color-mix(in srgb, var(--warn) 14%, transparent); border-left: 3px solid var(--warn); padding: 6px 10px; border-radius: 6px; margin: 6px 0; }
 .formgrid { display: grid; grid-template-columns: 170px 1fr; gap: 8px 14px; align-items: start; }
 .formgrid label { color: var(--muted); padding-top: 5px; font-size: 13px; }
+.formgrid input[type="checkbox"] { justify-self: start; width: auto; margin: 7px 0 0; }
 .chapters { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; }
 
 
@@ -596,3 +597,28 @@ section.group.folded > h2 { opacity: .75; }
 .facet-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow: auto; }
 .facet-list label { gap: 8px; }
 .facet-list label .muted { margin-left: auto; font-size: 12px; }
+/* choosing an item from the drawer for a ledger line */
+.pick-banner { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent); }
+.pick-add { margin-right: 8px; padding: 1px 8px; }
+.item-cell { display: flex; gap: 4px; align-items: center; }
+.item-cell .picker { flex: 1; min-width: 120px; }
+.lines-editor tr.line-details td { padding-top: 0; padding-bottom: 8px; border-top: 0; }
+.line-details .row { gap: 10px; align-items: center; flex-wrap: wrap; }
+.line-details select { width: auto; }
+.details-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; align-items: start; max-width: 620px; }
+.details-grid > .muted { padding-top: 5px; }
+.mods-field { display: flex; flex-direction: column; gap: 4px; }
+.mods-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mods-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 3px 8px; border-radius: 6px; background: var(--panel-2); }
+.mods-field .picker, .mods-field .picker input { width: 100%; }
+.chip-x { border: 0; background: none; padding: 0 0 0 4px; cursor: pointer; color: var(--muted); font: inherit; }
+.chip-x:hover { color: var(--bad); }
+table.holdings td.copy-cell { width: 1%; padding-left: 6px; }
+/* making a recipe: the form, and comparable recipes beside it */
+.recipe-make { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.recipe-compare { position: sticky; top: 12px; max-height: calc(100vh - 40px); overflow: auto; }
+.cmp-card { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+.cmp-card.this { background: var(--accent-soft); border-color: var(--accent); }
+.cmp-bill { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+.cmp-bill li { display: flex; justify-content: space-between; gap: 8px; border-top: 1px dashed var(--line); padding: 2px 0; }
+@media (max-width: 1000px) { .recipe-make { grid-template-columns: 1fr; } .recipe-compare { position: static; max-height: none; } }

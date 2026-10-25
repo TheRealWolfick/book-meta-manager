@@ -189,10 +189,29 @@ function dropFromDrawer(href) {
     setDrawer({ recent, open: drawer.open && recent.length > 0 });
 }
 
+// Choosing an item for a form (a ledger line) from the drawer: while set, collection pages of `collections` and item
+// notes show "Add" buttons, and a note made in the drawer is taken at once. {label, collections, pick(name)}
+let itemPick = null;
+const pickListeners = new Set();
+const setItemPick = (p) => { itemPick = p; pickListeners.forEach((f) => f(p)); };
+function useItemPick() {
+    const [p, set] = useState(itemPick);
+    useEffect(() => { pickListeners.add(set); return () => pickListeners.delete(set); }, []);
+    return p;
+}
+const pickable = (p, collection) => !!p && p.collections.includes(collection);
+/** Browse items in the drawer for a form; `pick(name)` gets the chosen (or new) item's note name */
+function browseItems({ label, collections = ["Items", "Materials", "Recipes"], pick }) {
+    setItemPick({ label, collections, pick: (name) => { setItemPick(null); collapseDrawer(); pick(name); toast(`Added ${name}`); } });
+    openInDrawer(`#/c/${encodeURIComponent(collections[0])}`);
+}
+
 const parseDrawerHref = (href) => href.replace(/^#\//, "").split("/").map(decodeURIComponent);
 function drawerLabel(href, index) {
     const [name, ...args] = parseDrawerHref(href);
     if (name === "chapter") return `Chapter ${args[1]}`;
+    if (name === "c") return collectionLabel(args.join("/"));
+    if (name === "new") return `New ${index?.schema.collections[args.join("/")]?.label ?? collectionLabel(args.join("/"))}`;
     const path = args.join("/");
     const n = index?.notes.find((x) => x.path === path);
     return n?.fm.title || n?.name || path.split("/").pop().replace(/\.md$/, "");
@@ -200,6 +219,7 @@ function drawerLabel(href, index) {
 
 function Drawer({ index }) {
     const d = useDrawer();
+    const pick = useItemPick();
     if (!d.recent.length) return null;
     const href = d.recent[0];
     const [name, ...args] = parseDrawerHref(href);
@@ -214,8 +234,13 @@ function Drawer({ index }) {
                 <button onClick=${() => { collapseDrawer(); go(href); }}>Open page</button>
                 <button title="Collapse" onClick=${collapseDrawer}>»</button>
             </div>
-            <div class="drawer-body" key=${href}>${name === "chapter"
-                ? html`<${ChapterView} folder=${args[0]} n=${args[1]} scope="drawer" />`
+            <div class="drawer-body" key=${href}>
+                ${pick && html`<div class="pick-banner"><span>Choosing for <b>${pick.label}</b>: press Add on a row, or open one and press Use this.</span>
+                    <span class="row">${pick.collections.map((c) => html`<button class=${`small ${name === "c" && args.join("/") === c ? "on" : ""}`} onClick=${() => openInDrawer(`#/c/${encodeURIComponent(c)}`)}>${collectionLabel(c)}</button>`)}
+                        <button class="small" onClick=${() => setItemPick(null)}>Cancel</button></span></div>`}
+                ${name === "chapter" ? html`<${ChapterView} folder=${args[0]} n=${args[1]} scope="drawer" />`
+                : name === "c" ? html`<${CollectionView} index=${index} collection=${args.join("/")} novelFilter="" scope="drawer" />`
+                : name === "new" ? html`<${NoteForm} index=${index} collection=${args.join("/")} scope="drawer" />`
                 : html`<${NoteView} index=${index} path=${args.join("/")} scope="drawer" />`}</div>
         </aside>
     </div>`;
@@ -323,13 +348,33 @@ function Picker({ value, options, onChange, placeholder, allowFree = true, onCre
     }, [text, options]);
     const exact = options.some((o) => o.label.toLowerCase() === text.trim().toLowerCase());
     const choose = (o) => { onChange(o); setText(o ? o.label : ""); setOpen(false); };
+    // the list is placed against the window (fixed), measured from the input, so a scrolling or clipped container
+    // (a table that scrolls sideways, a panel) never cuts it off; it opens upwards when there is more room above
+    const input = useRef();
+    const [place, setPlace] = useState(null);
+    useLayoutEffect(() => {
+        if (!open) return;
+        const measure = () => {
+            const r = input.current?.getBoundingClientRect();
+            if (!r) return;
+            const vh = globalThis.innerHeight ?? 800;
+            const below = vh - r.bottom - 8, above = r.top - 8;
+            const up = below < 220 && above > below;
+            setPlace({ left: r.left, width: Math.max(r.width, 220), up, top: up ? null : r.bottom + 2, bottom: up ? vh - r.top + 2 : null, max: Math.max(120, Math.min(up ? above : below, vh * 0.6)) });
+        };
+        measure();
+        addEventListener("scroll", measure, true);
+        addEventListener("resize", measure);
+        return () => { removeEventListener("scroll", measure, true); removeEventListener("resize", measure); };
+    }, [open]);
+    const placed = place && `position:fixed;left:${place.left}px;width:${place.width}px;right:auto;${place.up ? `bottom:${place.bottom}px;top:auto` : `top:${place.top}px;bottom:auto`};max-height:${place.max}px;z-index:80`;
     // typed text is taken when the field is left; an emptied field clears it (`onClear`)
     const commitFree = () => {
         if (!text.trim()) { if (onClear && value) onClear(); return; }
         if (allowFree && text !== value) onChange({ label: text.trim(), free: true });
     };
     return html`<div class="picker">
-        <input value=${text} placeholder=${placeholder} autoFocus=${autoFocus}
+        <input ref=${input} value=${text} placeholder=${placeholder} autoFocus=${autoFocus}
             onInput=${(e) => { setText(e.target.value); setOpen(true); setHl(0); }}
             onFocus=${() => setOpen(true)} onBlur=${() => setTimeout(() => { setOpen(false); commitFree(); }, 150)}
             onKeyDown=${(e) => {
@@ -338,7 +383,7 @@ function Picker({ value, options, onChange, placeholder, allowFree = true, onCre
                 if (e.key === "Enter") { e.preventDefault(); if (open && matches[hl]) choose(matches[hl]); else commitFree(); }
                 if (e.key === "Escape") setOpen(false);
             }} />
-        ${open && (matches.length > 0 || (onCreate && text.trim() && !exact)) && html`<div class="results">
+        ${open && (matches.length > 0 || (onCreate && text.trim() && !exact)) && html`<div class="results" style=${placed || ""}>
             ${matches.map((o, i) => html`<a class=${i === hl ? "hl" : ""} onMouseDown=${(e) => { e.preventDefault(); choose(o); }}><span>${o.label}</span><span class="muted">${o.hint ?? ""}</span></a>`)}
             ${onCreate && text.trim() && !exact && html`<a onMouseDown=${(e) => { e.preventDefault(); setOpen(false); onCreate(text.trim()); }}><span>${createLabel} “${text.trim()}”</span><span class="muted">new</span></a>`}
         </div>`}
@@ -356,7 +401,7 @@ function LinkField({ value, multiple, target, index, onChange, options: given })
         if (!o) return;
         let name = o.label;
         // "@plots" style targets are novel folders: free text just links by name
-        if (o.free && !index.resolve(name) && target && !target.startsWith("@")) {
+        if (o.free && !index.resolve(name) && typeof target === "string" && target && !target.startsWith("@")) {
             if (!confirm(`Create “${name}” in ${collectionLabel(target)}?`)) { setShown((n) => n + 1); return; }
             const r = await api.send("POST", "/api/note", { collection: target, name });
             name = r.path.split("/").pop().replace(/\.md$/, "");
@@ -366,7 +411,7 @@ function LinkField({ value, multiple, target, index, onChange, options: given })
     return html`<div>
         ${multiple && html`<div>${values.map((v) => html`<${Chip} value=${v} index=${index} onRemove=${() => onChange(values.filter((x) => x !== v))} />`)}</div>`}
         <div class="link-single"><${Picker} key=${shown} value=${multiple ? "" : linkLabel(value ?? "")} options=${options} onChange=${add} onClear=${multiple ? undefined : () => onChange("")}
-            placeholder=${target ? `Search ${collectionLabel(target.replace(/^@/, ""))}…` : "Search notes…"} />
+            placeholder=${Array.isArray(target) ? `Search ${target.map((t) => collectionLabel(t.replace(/^@/, "")).toLowerCase()).join(" and ")}…` : target ? `Search ${collectionLabel(target.replace(/^@/, ""))}…` : "Search notes…"} />
         ${!multiple && value && html`<button type="button" class="small link-clear" title="Clear" aria-label="Clear" onClick=${() => onChange("")}>×</button>`}</div>
     </div>`;
 }
@@ -455,7 +500,8 @@ function Home({ index }) {
 
 const HIDDEN_COLS = new Set(["title", "aliases", "type", "created-date", "tags", "description", "images", "facet"]);
 
-function CollectionView({ index, collection, novelFilter }) {
+function CollectionView({ index, collection, novelFilter, scope = "page" }) {
+    const pick = useItemPick();
     const [q, setQ] = useState("");
     // picked filter values, kept per collection in localStorage like the rest of the view's settings
     const [filters, setFiltersNow] = useState(() => store.get(`filters:${collection}`, {}));
@@ -524,12 +570,14 @@ function CollectionView({ index, collection, novelFilter }) {
     const groups = groupKeys.includes(groupBy) ? groupRows(sorted, groupBy, values, index) : [[null, sorted]];
     const cards = (rows, g) => html`<div class="cards" data-drawer>${rows.map((n) => html`<a class="card" href=${noteHref(n.path)} key=${n.path} data-flip=${`${g}|${n.path}`}>
         ${n.cover && html`<div class="cover" style=${`background-image:url("${n.cover}")`} />`}
-        <div class="body"><h3>${n.fm.title && n.fm.title !== n.name ? n.fm.title : n.name}</h3>
+        <div class="body"><h3>${addBtn(n)}${n.fm.title && n.fm.title !== n.name ? n.fm.title : n.name}</h3>
             <div>${asList(n.fm.cat).slice(0, 3).map((v) => html`<span class="chip">${linkLabel(v)}</span>`)}${n.fm.tier ? html`<span class="badge">tier ${n.fm.tier}</span>` : ""}</div>
             <p>${n.fm.description ?? ""}</p></div></a>`)}</div>`;
     const groupBtn = (k) => html`<button class=${`small ${groupBy === k ? "on" : ""}`} aria-pressed=${groupBy === k}
         title=${groupBy === k ? "Ungroup" : `Group by ${k}`} onClick=${() => setGroup(groupBy === k ? "" : k)}>${k}</button>`;
-    const cell = (n, k) => (k === "name" ? html`<a href=${noteHref(n.path)}>${n.name}</a>`
+    const adding = pickable(pick, collection);
+    const addBtn = (n) => adding && html`<button class="small primary pick-add" title=${`Use ${n.name} for ${pick.label}`} onClick=${(e) => { e.preventDefault(); e.stopPropagation(); pick.pick(n.name); }}>Add</button>`;
+    const cell = (n, k) => (k === "name" ? html`${addBtn(n)}<a href=${noteHref(n.path)}>${n.name}</a>`
         : k === "description" ? String(n.fm.description ?? "").slice(0, 160) : html`<${Value} v=${n.fm[k]} index=${index} />`);
     return html`<div ref=${flip}>
         <div class="spread">
@@ -538,7 +586,7 @@ function CollectionView({ index, collection, novelFilter }) {
                 <input placeholder="Filter…" value=${q} onInput=${(e) => setQ(e.target.value)} />
                 ${allFacets.length > 0 && html`<button title="Choose which filter groups show" onClick=${() => setPicking(true)}>Filters${hiddenFacets.some((k) => allFacets.some((f) => f.key === k)) ? html` <span class="muted">(${facets.length}/${allFacets.length})</span>` : ""}</button>`}
                 <button onClick=${() => { const m = mode === "table" ? "cards" : "table"; setMode(m); store.set("viewMode", m); }}>${mode === "table" ? "Cards" : "Table"}</button>
-                <button class="primary" onClick=${() => go(`#/new/${encodeURIComponent(collection)}`)}>New</button>
+                <button class="primary" onClick=${() => (scope === "drawer" ? openInDrawer : go)(`#/new/${encodeURIComponent(collection)}`)}>New</button>
             </div>
         </div>
         <div class="facets">
@@ -722,14 +770,153 @@ function WhereUsed({ uses }) {
     return html`<ul>${uses.map((u) => html`<li>${u.count}× in ${u.item ? html`<a href=${noteHref(u.item)}>${u.name}</a>` : u.name}${u.parents?.length ? html`<${WhereUsed} uses=${u.parents} />` : ""}</li>`)}</ul>`;
 }
 
-function BlueprintPanel({ page }) {
+/** "[[Name]]" for a note path (a misc name stays as text) */
+const pathLink = (p, name) => (p ? `[[${p.split("/").pop().replace(/\.md$/, "")}]]` : name);
+/**
+ * A blueprint as a callout (the vault theme styles [!blueprint]): the item's name and description, then tier, power
+ * system and disciplines ("-" when blank), then the bill of materials for the whole build (raw materials, and parts
+ * that have no blueprint of their own), one per line under its label: the same layout as the item callout (groups
+ * as paragraphs, separated by blank ">" lines). `count` builds that many.
+ */
+function blueprintCallout(bp, page, count = 1, index = null) {
+    const root = bp.root;
+    const dash = (v) => shownValue(v) || "-";
+    // the item's description (what is being made), else the recipe's own
+    const itemNote = root.item === page.path ? page : index?.notes.find((n) => n.path === root.item);
+    const desc = shownValue(itemNote?.fm.description) || shownValue(page.fm.description) || "-";
+    const lines = [`[!blueprint] ${root.name}${count > 1 ? ` ×${count}` : ""}`, desc, ""];
+    lines.push(`**Tier:** ${dash(root.tier ?? page.fm.tier)}`);
+    lines.push(`**Power system:** ${dash(page.fm["power-system"])}`);
+    lines.push(`**Disciplines:** ${dash(bp.disciplines.map((d) => `[[${d}]]`))}`);
+    const bill = [...bp.bill.map((b) => `${b.qtyText} ${pathLink(b.material, b.name)}`), ...bp.parts.map((x) => `${x.count}× ${pathLink(x.item, x.name)}`)];
+    // (formatted like the item callout: one line each, no list)
+    lines.push("", "**Bill of materials:**", ...(bill.length ? bill : ["-"]));
+    return lines.map((l) => (l ? `> ${l}` : ">")).join("\n");
+}
+
+const GRAMS = { g: 1, kg: 1000, t: 1e6 };
+/**
+ * Make the recipe (blueprint) for an item: its components and materials, description, category, tier, power system
+ * and disciplines. Components and materials can be looked up in the drawer (Browse); comparable recipes (same kind
+ * of item, power system, nearby tier) sit beside the form with their bills, to keep costs in balance. Saving creates
+ * "<item> (Blueprint)" and links it from the item (`recipe`), then opens the item.
+ */
+function RecipeCreator({ index, item }) {
+    const { data: page, error } = useApi(`/api/note?${qs({ path: item })}`);
+    const { data: cmp } = useApi(`/api/recipe/compare?${qs({ item })}`);
+    const [form, setForm] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [err, setErr] = useState("");
+    const latest = useRef(null);
+    latest.current = form;
+    useEffect(() => {
+        if (!page || form) return;
+        setForm({
+            description: "", tier: page.fm.tier ?? "", cat: index?.resolve("tech blueprint") ? ["[[tech blueprint]]"] : [],
+            "power-system": asList(page.fm["power-system"]), disciplines: [], components: [], materials: [{ material: "", qty: "", unit: "g" }], assembly: "",
+        });
+    }, [page]);
+    const touched = !!form && (form.description || form.components.length || form.materials.some((m) => m.material) || form.assembly || form.disciplines.length);
+    useEffect(() => markDirty("page", `recipe:${item}`, !!touched), [touched]);
+    useEffect(() => () => { markDirty("page", `recipe:${item}`, false); if (itemPick) setItemPick(null); }, []);
+    if (!page || !form) return html`<${Loading} error=${error} />`;
+    if (page.blueprint) return html`<p>${page.name} already has a recipe. <a href=${noteHref(item)}>Open the item</a></p>`;
+    const set = (patch) => setForm({ ...form, ...patch });
+    const rowSet = (key, i, patch) => set({ [key]: form[key].map((r, j) => (j === i ? { ...r, ...patch } : r)) });
+    const rowDel = (key, i) => set({ [key]: form[key].filter((_, j) => j !== i) });
+    // a pick from the drawer lands in the form as it is by then
+    const browse = (key, field, i, collections, label) => browseItems({ label, collections, pick: (name) => {
+        const f = latest.current;
+        setForm({ ...f, [key]: f[key].map((r, j) => (j === i ? { ...r, [field]: toLink(name) } : r)) });
+    } });
+    const opts = (c) => (index?.inCollection(c) ?? []).map((n) => ({ label: n.name, hint: n.fm.title && n.fm.title !== n.name ? n.fm.title : linkLabel(asList(n.fm.cat)[0] ?? "") }));
+    const itemOpts = opts("Items").filter((o) => o.label !== page.name), matOpts = opts("Materials");
+    const draftGrams = form.materials.reduce((n, m) => n + (m.material && GRAMS[m.unit] ? (Number(m.qty) || 0) * GRAMS[m.unit] : 0), 0);
+    const draftParts = form.components.reduce((n, c) => n + (c.item ? Number(c.count) || 1 : 0), 0);
+    const weight = (g) => (g >= 1000 ? `${(g / 1000).toFixed(g >= 10000 ? 0 : 1)} kg` : `${Math.round(g)} g`);
+    const save = async () => {
+        if (busy) return;
+        setBusy(true); setErr("");
+        try {
+            const r = await api.send("POST", "/api/recipe", {
+                item, assembly: form.assembly,
+                fm: { description: form.description, tier: form.tier, cat: form.cat, disciplines: form.disciplines, "power-system": form["power-system"] },
+                components: form.components.filter((c) => c.item).map((c) => ({ item: c.item, count: c.count })),
+                materials: form.materials.filter((m) => m.material).map((m) => ({ material: m.material, qty: m.qty, unit: m.unit })),
+            });
+            markDirty("page", `recipe:${item}`, false);
+            toast(`Created ${r.name} and linked it from ${page.name}`);
+            go(noteHref(item));
+        } catch (e) { setErr(e.message); }
+        setBusy(false);
+    };
+    return html`<div>
+        <div class="muted"><a href=${noteHref(item)}>${page.name}</a></div>
+        <h1>New recipe for ${page.fm.title || page.name}</h1>
+        <div class="recipe-make">
+            <div>
+                <div class="panel"><div class="formgrid">
+                    <label>Description</label><${AutoTextarea} value=${form.description} onInput=${(e) => set({ description: e.target.value })} style="font-family:inherit" />
+                    <label>Category</label><${LinkField} value=${form.cat} multiple=${true} target="Taxonomy/Recipe Categories" index=${index} onChange=${(v) => set({ cat: v })} />
+                    <label>Tier</label><input type="number" min="0" value=${form.tier} onInput=${(e) => set({ tier: e.target.value })} style="width:90px" />
+                    <label>Power system</label><${LinkField} value=${form["power-system"]} multiple=${true} target="Power Systems" index=${index} onChange=${(v) => set({ "power-system": v })} />
+                    <label>Disciplines</label><${LinkField} value=${form.disciplines} multiple=${true} target="Taxonomy/Engineering Disciplines" index=${index} onChange=${(v) => set({ disciplines: v })} />
+                </div></div>
+                <div class="panel">
+                    <h3 style="margin-top:0">Materials</h3>
+                    <table class="lines-editor"><thead><tr><th>material</th><th style="width:90px">amount</th><th style="width:70px">unit</th><th></th></tr></thead><tbody>
+                        ${form.materials.map((m, i) => html`<tr>
+                            <td><div class="item-cell"><${Picker} value=${linkLabel(m.material ?? "")} options=${matOpts} placeholder="Material" onChange=${(o) => rowSet("materials", i, { material: o ? toLink(o.label) : "" })} />
+                                <button type="button" class="small" title="Look up materials in the side drawer (density, rarity, sources…) and add one" onClick=${() => browse("materials", "material", i, ["Materials"], `material ${i + 1}`)}>Browse</button></div></td>
+                            <td><input type="number" min="0" step="any" value=${m.qty} onInput=${(e) => rowSet("materials", i, { qty: e.target.value })} /></td>
+                            <td><select value=${m.unit} onChange=${(e) => rowSet("materials", i, { unit: e.target.value })}>${["g", "kg", "t", "ea"].map((u) => html`<option>${u}</option>`)}</select></td>
+                            <td><button type="button" class="small" aria-label="Remove material" onClick=${() => rowDel("materials", i)}>×</button></td></tr>`)}
+                    </tbody></table>
+                    <button class="small" onClick=${() => set({ materials: [...form.materials, { material: "", qty: "", unit: "g" }] })}>+ Material</button>
+                </div>
+                <div class="panel">
+                    <h3 style="margin-top:0">Components <span class="muted" style="font-size:13px">items built into it (with their own recipes)</span></h3>
+                    ${form.components.length > 0 && html`<table class="lines-editor"><thead><tr><th>item</th><th style="width:90px">count</th><th></th></tr></thead><tbody>
+                        ${form.components.map((c, i) => html`<tr>
+                            <td><div class="item-cell"><${Picker} value=${linkLabel(c.item ?? "")} options=${itemOpts} placeholder="Component item" onChange=${(o) => rowSet("components", i, { item: o ? toLink(o.label) : "" })} />
+                                <button type="button" class="small" title="Browse the items in the side drawer and add one" onClick=${() => browse("components", "item", i, ["Items"], `component ${i + 1}`)}>Browse</button></div></td>
+                            <td><input type="number" min="1" value=${c.count} onInput=${(e) => rowSet("components", i, { count: e.target.value })} /></td>
+                            <td><button type="button" class="small" aria-label="Remove component" onClick=${() => rowDel("components", i)}>×</button></td></tr>`)}
+                    </tbody></table>`}
+                    <button class="small" onClick=${() => set({ components: [...form.components, { item: "", count: 1 }] })}>+ Component</button>
+                </div>
+                <div class="panel"><h3 style="margin-top:0">Assembly <span class="muted" style="font-size:13px">optional</span></h3>
+                    <${AutoTextarea} value=${form.assembly} onInput=${(e) => set({ assembly: e.target.value })} placeholder="1. Steps for putting it together…" style="font-family:inherit;width:100%" /></div>
+                ${err && html`<p class="error">${err}</p>`}
+                <div class="row"><button class="primary" disabled=${busy} onClick=${save}>${busy ? "Creating…" : "Create recipe"}</button><a class="button" href=${noteHref(item)}>Cancel</a>
+                    <span class="muted">Saved as "${page.name} (Blueprint)" and linked from the item.</span></div>
+            </div>
+            <aside class="panel recipe-compare" data-drawer>
+                <h3 style="margin-top:0">Comparable recipes</h3>
+                <p class="muted small-note">Same kind of item, power system or a nearby tier: their whole-build bills, to keep costs in balance.</p>
+                <div class="cmp-card this"><b>This recipe</b> <span class="muted">${form.tier !== "" ? `tier ${form.tier}` : "no tier"}</span>
+                    <div class="muted">${draftGrams ? weight(draftGrams) : "no weighed materials"} · ${draftParts} component${draftParts === 1 ? "" : "s"}</div></div>
+                ${!cmp ? html`<p class="muted">Looking…</p>` : !cmp.recipes.length ? html`<p class="muted">No similar recipes yet.</p>`
+                    : cmp.recipes.map((r) => html`<div class="cmp-card">
+                        <div class="spread"><a href=${noteHref(r.path)}>${r.itemName}</a><span class="muted">${r.tier ? `tier ${r.tier}` : "—"}</span></div>
+                        ${r.why.length > 0 && html`<div class="muted small-note">like it: ${r.why.join(" · ")}</div>`}
+                        <div class="muted">${r.grams ? weight(r.grams) : "no weighed materials"}${r.components ? ` · ${r.components} component${r.components === 1 ? "" : "s"}` : ""}${r.disciplines.length ? ` · ${r.disciplines.join(", ")}` : ""}</div>
+                        <ul class="cmp-bill">${r.bill.map((b) => html`<li><span>${b.name}</span><span class="num">${b.qtyText}</span></li>`)}${r.parts.map((x) => html`<li><span>${x.name}</span><span class="num">${x.count}×</span></li>`)}</ul>
+                    </div>`)}
+            </aside>
+        </div>
+    </div>`;
+}
+
+function BlueprintPanel({ page, index }) {
     const [count, setCount] = useState(1);
     const item = page.collection === "Recipes" ? page.blueprint.root.item : page.path;
     const { data } = useApi(count === 1 ? null : `/api/blueprint?${qs({ item, count })}`);
     const bp = count === 1 ? page.blueprint : data ?? page.blueprint;
     return html`<div class="panel">
         <div class="spread"><h2 style="margin:0">Build tree</h2>
-            <label class="row muted">Build <input type="number" min="1" value=${count} style="width:70px" onInput=${(e) => setCount(Math.max(1, Number(e.target.value) || 1))} /></label></div>
+            <div class="row"><label class="row muted">Build <input type="number" min="1" value=${count} style="width:70px" onInput=${(e) => setCount(Math.max(1, Number(e.target.value) || 1))} /></label>
+                <button class="small" title="Copy the blueprint as a callout (components, materials and what it takes to make)" onClick=${() => copyText(blueprintCallout(bp, page, count, index), `Copied the ${bp.root.name} blueprint as a callout`)}>⧉ Copy callout</button></div></div>
         <div class="grid2" style="margin-top:10px">
             <div class="tree"><ul><${Tree} node=${bp.root} /></ul></div>
             <div>
@@ -867,9 +1054,8 @@ function FieldsEditor({ page, index, spec, scope, linkOptions }) {
     const input = (k) => {
         const value = k in edits ? edits[k] : fm[k];
         const def = defs.has(k) ? defs.get(k) : Array.isArray(fm[k]) ? [] : typeof fm[k] === "boolean" ? false : "";
-        // unknown keys holding links get a link picker over all notes
-        const target = spec?.links?.[k] ?? (asList(fm[k]).some(isLink) ? "" : undefined);
-        return fieldInput({ key: k, def, target, value, index, options: target?.startsWith("@") ? linkOptions?.[target] ?? [] : undefined, onChange: (v) => edit(k, v) });
+        const target = linkTargetOf(spec, k, fm[k]);
+        return fieldInput({ key: k, def, target, value, index, options: linkOptionsFor(target, index, linkOptions), onChange: (v) => edit(k, v) });
     };
     return html`<div onKeyDown=${(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); } }}>
         <div class="formgrid">${keys.map((k) => html`
@@ -943,20 +1129,24 @@ function NoteView({ index, path, scope = "page" }) {
         "@characters": plan.characters.map((c) => ({ label: c.name })),
     }, [plan]);
     const [renaming, setRenaming] = useState(false);
+    const pick = useItemPick();
+    // a character's relation fields pick from the characters of its own novel
+    const charNovel = page?.fm.type === "character" ? index?.novels.find((n) => page.path.startsWith(`${n.folder}/`))?.folder : null;
+    const novelLinks = useNovelLinks(charNovel);
     if (!page) return html`<${Loading} error=${error} />`;
     const schema = index?.schema;
     const spec = page.plan?.spec ?? (page.collection ? schema?.collections[page.collection] : page.fm.type === "character" ? schema?.characters : null);
     const novel = index?.novels.find((n) => page.path.startsWith(`${n.folder}/`));
     const linkGroups = (groups) => Object.entries(groups).sort((a, b) => b[1].length - a[1].length).map(([c, list]) => html`<div style="margin-bottom:6px"><b class="muted">${c === "Unresolved" ? c : collectionLabel(c)} (${list.length})</b><div>${list.slice(0, 60).map((b) => b.path ? html`<a class="chip" href=${noteHref(b.path)}>${b.name}</a>` : html`<span class="chip muted">${b.name}</span>`)}${list.length > 60 ? html`<span class="muted"> +${list.length - 60} more</span>` : ""}</div></div>`);
     const fields = html`<div class="panel">${page.fmError ? html`<p class="muted">Fix the frontmatter in Obsidian to edit fields here.</p>`
-        : html`<${FieldsEditor} key=${page.path} page=${page} index=${index} spec=${spec} scope=${scope} linkOptions=${linkOptions} />`}</div>`;
+        : html`<${FieldsEditor} key=${page.path} page=${page} index=${index} spec=${spec} scope=${scope} linkOptions=${linkOptions ?? novelLinks} />`}</div>`;
     const usage = html`
         ${page.heldBy?.length > 0 && html`<div class="panel"><h3>Held by</h3>${page.heldBy.map((x) => html`<div><a href=${`#/owner/${encodeURIComponent(x.novel)}/${encodeURIComponent(x.owner)}`}>${x.owner}</a> <span class="muted">${x.qtyText}${x.store !== "inventory" ? ` @ ${x.store}` : ""} · ${x.novel}</span></div>`)}</div>`}
         ${page.whereUsed?.length > 0 && html`<div class="panel"><h3>Used in</h3><${WhereUsed} uses=${page.whereUsed} /></div>`}
         ${page.creatureStats && html`<${CreatureNovels} page=${page} index=${index} />`}`;
     const imageDrop = html`<div class="panel"><${ImageDrop} path=${page.path} /></div>`;
     const content = html`
-        ${page.blueprint && html`<${BlueprintPanel} page=${page} />`}
+        ${page.blueprint && html`<${BlueprintPanel} page=${page} index=${index} />`}
         ${page.body.trim() && (page.plan
             ? html`<details class="panel"><summary class="muted">Note body (not used by the plan, edit it in Obsidian)</summary><${Html} html=${page.html} /></details>`
             : html`<div class="panel"><${Html} html=${page.html} /></div>`)}`;
@@ -992,6 +1182,9 @@ function NoteView({ index, path, scope = "page" }) {
             </div>
             <div class="row">
                 ${page.fm.type === "character" && novel && html`<button onClick=${() => go(`#/owner/${encodeURIComponent(novel.folder)}/${encodeURIComponent(page.name)}`)}>Ledgers</button>`}
+                ${pickable(pick, page.collection) && html`<button class="primary" onClick=${() => pick.pick(page.name)}>Use this for ${pick.label}</button>`}
+                ${page.collection === "Items" && !page.blueprint && html`<button title="Make the recipe (blueprint) for this item" onClick=${() => { if (scope === "drawer") collapseDrawer(); go(`#/newrecipe/${encodeURIComponent(page.path)}`); }}>Create recipe</button>`}
+                ${["Items", "Materials"].includes(page.collection) && html`<button title="Copy as an item callout (like a game's item tooltip)" onClick=${() => copyText(itemCallout(page, spec), `Copied ${page.name} as a callout`)}>⧉ Copy callout</button>`}
                 ${renameable && html`<button title="Rename the file; links to it in the vault follow" onClick=${startRename}>Rename file</button>`}
                 ${deletable && html`<${ConfirmButton} class="" onConfirm=${del}
                     title=${`Move to the vault's .trash folder${linkedFrom ? `. ${linkedFrom} note${linkedFrom > 1 ? "s" : ""} link here and will show it as unresolved` : ""}${page.heldBy?.length ? ". Ledger lines still name it" : ""}`}>Delete<//>`}
@@ -1172,6 +1365,29 @@ function PlanEditor({ value, onChange, placeholder = "First event…" }) {
     </div>`;
 }
 
+/** "@characters" picker options: the characters of a novel (folder), for relation fields */
+function useNovelLinks(folder) {
+    const { data } = useApi(folder ? `/api/novel?${qs({ folder })}` : null);
+    return useMemo(() => data && { "@characters": data.characters.map((c) => ({ label: c.name, hint: c.fm?.title && c.fm.title !== c.name ? c.fm.title : "Character" })) }, [data]);
+}
+
+/**
+ * What a frontmatter key links to: the schema's `links` entry (a collection, an "@" folder of the novel, or a list of
+ * them), else `relations/*` on characters link characters and factions, else "" (any note) when it already holds
+ * links, else nothing (plain text)
+ */
+function linkTargetOf(spec, k, current) {
+    if (spec?.links?.[k] != null) return spec.links[k];
+    if (k.startsWith("relations/")) return ["@characters", "Factions"];
+    return asList(current).some(isLink) ? "" : undefined;
+}
+/** Picker options for a target: "@" folders come from `linkOptions`, collections from the index, a list joins them */
+function linkOptionsFor(target, index, linkOptions) {
+    if (target == null || (typeof target === "string" && !target.startsWith("@"))) return undefined;
+    return [].concat(target).flatMap((t) => (t.startsWith("@") ? linkOptions?.[t] ?? []
+        : (index?.inCollection(t) ?? []).map((n) => ({ label: n.name, hint: n.fm.title !== n.name ? n.fm.title || collectionLabel(t) : collectionLabel(t) }))));
+}
+
 function fieldInput({ key, def, target, value, onChange, index, options }) {
     if (target != null) return html`<${LinkField} value=${value} multiple=${Array.isArray(def)} target=${target} index=${index} onChange=${onChange} options=${options} />`;
     if (typeof def === "boolean") return html`<input type="checkbox" checked=${!!value} onChange=${(e) => onChange(e.target.checked)} style="width:auto" />`;
@@ -1184,7 +1400,9 @@ function fieldInput({ key, def, target, value, onChange, index, options }) {
 const coerce = (v) => (typeof v === "string" && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : v);
 
 /** Create a data store note or a character (existing notes are edited in place on their page) */
-function NoteForm({ index, collection, novel }) {
+function NoteForm({ index, collection, novel, scope = "page" }) {
+    const pick = useItemPick();
+    const novelLinks = useNovelLinks(collection === "characters" ? novel : null);
     const schema = index?.schema;
     const spec = collection === "characters" ? schema?.characters : schema?.collections[collection];
     const [vals, setVals] = useState(null);
@@ -1209,7 +1427,11 @@ function NoteForm({ index, collection, novel }) {
             } else {
                 const fm = Object.fromEntries(Object.entries(vals).map(([k, v]) => [k, coerce(v)]));
                 const r = await api.send("POST", "/api/note", { collection, name, fm });
-                go(noteHref(r.path));
+                const made = r.path.split("/").pop().replace(/\.md$/, "");
+                // made while choosing an item: it is taken at once; otherwise it opens where the form was
+                if (pickable(pick, collection)) pick.pick(made);
+                else if (scope === "drawer") openInDrawer(noteHref(r.path));
+                else go(noteHref(r.path));
             }
         } catch (e) { setErr(e.message); }
         setBusy(false);
@@ -1221,7 +1443,7 @@ function NoteForm({ index, collection, novel }) {
             <label>File name</label><input value=${name} onInput=${(e) => setName(e.target.value)} placeholder="Unique note name" autoFocus style="width:100%" />
             ${spec.fields.filter(([k]) => !["type", "created-date", "images", "facet"].includes(k) && !generated.has(k)).map(([k, def]) => html`
                 <label>${k}</label>
-                ${fieldInput({ key: k, def, target: spec.links?.[k], value: vals[k], index, onChange: (v) => setVals((s) => ({ ...s, [k]: v })) })}`)}
+                ${fieldInput({ key: k, def, target: linkTargetOf(spec, k), value: vals[k], index, options: linkOptionsFor(linkTargetOf(spec, k), index, novelLinks), onChange: (v) => setVals((s) => ({ ...s, [k]: v })) })}`)}
         </div></div>
         ${err && html`<p class="error">${err}</p>`}
         <div class="row"><button class="primary" disabled=${busy || !name.trim()} onClick=${save}>Create</button>
@@ -1645,7 +1867,7 @@ function EntryCard({ e, folder, behaviour, future, showOwner }) {
     </div>`;
 }
 
-function OwnerView({ folder, owner, params }) {
+function OwnerView({ index, folder, owner, params }) {
     const [at, setAt] = useState(params.get("at") ? Number(params.get("at")) : null);
     const [compare, setCompare] = useState(null);
     const [tab, setTab] = useState(params.get("type") ?? null);
@@ -1685,7 +1907,7 @@ function OwnerView({ folder, owner, params }) {
         ${!current ? html`<p class="muted">No ledgers yet.</p>` : html`
             ${current.computed.warnings.length > 0 && html`<div class="warnbox">${current.computed.warnings.map((w) => html`<div>${w.entry}: ${w.message}</div>`)}</div>`}
             ${behaviour === "stock" && html`<div class="grid2">
-                <div class="panel"><h3>Held at chapter ${chapter}</h3>${holdingsTable(current.computed.stacks)}</div>
+                <div class="panel"><h3>Held at chapter ${chapter}</h3>${holdingsTable(current.computed.stacks, index)}</div>
                 ${current.computed.diff && html`<div class="panel"><h3>Changes from chapter ${compare} to ${chapter}</h3>
                     <table><tbody>${current.computed.diff.map((d) => html`<tr><td>${d.itemPath ? html`<a href=${noteHref(d.itemPath)}>${d.itemName}</a>` : d.itemName}</td><td class="muted">${d.store}</td><td class="num" style=${`color:var(${d.change > 0 ? "--ok" : "--bad"})`}>${d.changeText}</td></tr>`)}</tbody></table></div>`}
             </div>`}
@@ -1743,12 +1965,76 @@ function CreatureNovels({ page, index }) {
     </div>`;
 }
 
-function holdingsTable(stacks) {
+function holdingsTable(stacks, index) {
     if (!stacks.length) return html`<p class="muted">Nothing held.</p>`;
     const byStore = new Map();
     for (const s of stacks) { if (!byStore.has(s.store)) byStore.set(s.store, []); byStore.get(s.store).push(s); }
+    // a held item's callout: the item's own info plus this copy's condition, rarity and modifiers
+    const copy = async (s) => {
+        const note = s.itemPath ? index?.notes.find((n) => n.path === s.itemPath) : null;
+        // a held recipe copies as its blueprint
+        if (note?.collection === "Recipes") {
+            try {
+                const page = await api.get(`/api/note?${qs({ path: note.path })}`);
+                if (page.blueprint) return copyText(blueprintCallout(page.blueprint, page, 1, index), `Copied the ${s.itemName} blueprint as a callout`);
+            } catch { /* falls back to an item callout */ }
+        }
+        copyText(itemCallout(note, note ? index.schema.collections[note.collection] : null, { name: s.itemName, qtyText: s.qtyText, condition: s.condition, rarity: s.rarity, qty: s.qty, mods: s.mods ?? [] }), `Copied ${s.itemName} as a callout`);
+    };
     return html`${[...byStore.entries()].map(([st, list]) => html`<div style="margin-bottom:8px"><b class="muted">${st}</b>
-        <table><tbody>${list.map((s) => html`<tr><td>${s.itemPath ? html`<a href=${noteHref(s.itemPath)}>${s.itemName}</a>` : html`<span title="Misc item">${s.itemName} <span class="badge">misc</span></span>`}${s.condition ? html` <span class="muted">(${s.condition})</span>` : ""}</td><td class="num" style=${s.qty < 0 ? "color:var(--bad)" : ""}>${s.qtyText}</td></tr>`)}</tbody></table></div>`)}`;
+        <table class="holdings"><tbody>${list.map((s) => html`<tr><td>${s.itemPath ? html`<a href=${noteHref(s.itemPath)}>${s.itemName}</a>` : html`<span title="Misc item">${s.itemName} <span class="badge">misc</span></span>`}${heldDetails(s)}</td>
+            <td class="num" style=${s.qty < 0 ? "color:var(--bad)" : ""}>${s.qtyText}</td>
+            <td class="copy-cell"><button class="small" title="Copy as an item callout" aria-label=${`Copy ${s.itemName} as a callout`} onClick=${() => copy(s)}>⧉</button></td></tr>`)}</tbody></table></div>`)}`;
+}
+/** condition, rarity and modifiers of a held stack, after its name */
+const heldDetails = (s) => {
+    const kind = [s.condition, s.rarity].filter(Boolean).join(", "), mods = (s.mods ?? []).map(linkText).join(", ");
+    return kind || mods ? html` <span class="muted">(${[kind, mods].filter(Boolean).join("; ")})</span>` : "";
+};
+/** a [[link]] as its label, other text as it is */
+const linkText = (v) => (isLink(v) ? linkLabel(v) : String(v));
+
+// ------------------------------------------------------------------ item callouts
+
+// Fields an item callout handles itself (or leaves out)
+const ITEM_OWN = new Set(["title", "aliases", "type", "images", "novels", "created-date", "tags", "description", "rarity", "energy-source", "elements", "status", "recipe", "system-item", "facet", "cover", "cat", "subcat"]);
+const shownValue = (v) => asList(v).filter((x) => x !== "" && x != null && x !== false).map((x) => (x === true ? "yes" : String(x).replace(/\s*\n\s*/g, " "))).join(", ");
+// The stat groups of an item callout, in order (fields of an item that no group names go in a last group)
+const ITEM_GROUPS = [
+    ["quantity", "category", "rarity", "grade", "tier"],
+    ["energy-source", "elements", "power-system", "tradition", "heritage", "teaches"],
+    ["condition", "modifiers"],
+    ["slot", "applies-to", "uom", "density", "usage", "sources"],
+    ["value", "currency"],
+];
+/**
+ * An item (or material) as a callout, like a game's item information: the name as its title, the description, then
+ * its stats one per line in groups of like things (what it is; its power; this copy's condition and modifiers; how it
+ * is used; its worth; the rest), a blank callout line (">") before each group that has anything in it, so each group
+ * is its own paragraph and the theme decides the gap. Rarity, energy source and
+ * elements are always there ("-" when blank), as is the description.
+ * extra: {name, qty, qtyText, condition, rarity (overrides the item's), mods: [text or [[link]]]}
+ */
+function itemCallout(note, spec, extra = {}) {
+    const fm = note?.fm ?? {};
+    const dash = (v) => shownValue(v) || "-";
+    // every stat this item has: key -> [label, value]
+    const stats = new Map();
+    if (extra.qtyText && !(extra.qty === 1 && /^1\s*[x×]?$/i.test(extra.qtyText))) stats.set("quantity", ["Quantity", extra.qtyText]);
+    const kind = [shownValue(fm.cat), shownValue(fm.subcat)].filter(Boolean).join(" › ");
+    if (kind) stats.set("category", ["Category", kind]);
+    stats.set("rarity", ["Rarity", dash(extra.rarity || fm.rarity)]);
+    stats.set("energy-source", ["Energy source", dash(fm["energy-source"])]);
+    stats.set("elements", ["Elements", dash(fm.elements)]);
+    if (extra.condition) stats.set("condition", ["Condition", extra.condition]);
+    if (extra.mods?.length) stats.set("modifiers", ["Modifiers", extra.mods.join(", ")]);
+    for (const k of spec?.fields?.map(([k]) => k) ?? Object.keys(fm)) if (!ITEM_OWN.has(k) && !stats.has(k) && shownValue(fm[k])) stats.set(k, [fieldLabel(k), shownValue(fm[k])]);
+    const grouped = new Set(ITEM_GROUPS.flat());
+    const groups = [...ITEM_GROUPS, [...stats.keys()].filter((k) => !grouped.has(k))]
+        .map((keys) => keys.filter((k) => stats.has(k)).map((k) => `**${stats.get(k)[0]}:** ${stats.get(k)[1]}`)).filter((g) => g.length);
+    const lines = [`[!item] ${fm.title || note?.name || extra.name || "Item"}`, shownValue(fm.description) || "-"];
+    for (const g of groups) lines.push("", ...g);
+    return lines.map((l) => (l ? `> ${l}` : ">")).join("\n");
 }
 
 /** A chapter's plan (and working title while there's no chapter note); saved with "Save changes" */
@@ -1837,9 +2123,10 @@ const ACTIONS = ["add", "remove", "move", "transfer-out"];
 const UNITS = ["ea", "g", "kg", "t"];
 
 function ItemPicker({ value, index, onChange, onCreate }) {
-    const options = useMemo(() => [...(index?.inCollection("Items") ?? []), ...(index?.inCollection("Materials") ?? [])]
-        .map((n) => ({ label: n.name, hint: n.collection === "Materials" ? "material" : linkLabel(asList(n.fm.cat)[0] ?? "") })), [index]);
-    return html`<${Picker} value=${linkLabel(value ?? "")} options=${options} placeholder="Item, material or misc text"
+    // (recipes are held like items and materials: a character can learn or carry one)
+    const options = useMemo(() => [...(index?.inCollection("Items") ?? []), ...(index?.inCollection("Materials") ?? []), ...(index?.inCollection("Recipes") ?? [])]
+        .map((n) => ({ label: n.name, hint: n.collection === "Materials" ? "material" : n.collection === "Recipes" ? "recipe" : linkLabel(asList(n.fm.cat)[0] ?? "") })), [index]);
+    return html`<${Picker} value=${linkLabel(value ?? "")} options=${options} placeholder="Item, material, recipe or misc text"
         onChange=${(o) => onChange(o ? (o.free ? o.label : toLink(o.label)) : "")} onCreate=${onCreate} createLabel="Create data entry for" />`;
 }
 
@@ -1860,10 +2147,55 @@ function CreateItemForm({ name, index, onSave, onCancel }) {
     </div>`;
 }
 
+/** A taxonomy facet's values for a dropdown, in rank order (`class`, then title): [{value: note name, label: title}] */
+function rankedOptions(index, facet) {
+    return (index?.inCollection(facet) ?? []).slice()
+        .sort((a, b) => (Number(a.fm.class) || 0) - (Number(b.fm.class) || 0) || String(a.fm.title ?? a.name).localeCompare(String(b.fm.title ?? b.name)))
+        .map((n) => ({ value: n.name, label: n.fm.title ?? n.name }));
+}
+/**
+ * A dropdown over ranked options for a line field holding a [[link]]: shows the stored link's value (matched by name,
+ * ignoring case; a value the facet doesn't have stays listed so it is never shown as blank), and gives back a
+ * [[link]] (or "" for the empty choice)
+ */
+function rankedSelect(options, current, emptyLabel, onChange) {
+    const cur = current ? linkLabel(current) : "";
+    const hit = options.find((o) => o.value.toLowerCase() === cur.toLowerCase() || o.label.toLowerCase() === cur.toLowerCase());
+    const list = cur && !hit ? [...options, { value: cur, label: cur }] : options;
+    return html`<select value=${hit ? hit.value : cur} onChange=${(e) => onChange(e.target.value ? toLink(e.target.value) : "")}>
+        <option value="">${emptyLabel}</option>${list.map((o) => html`<option value=${o.value}>${o.label}</option>`)}</select>`;
+}
+
+/** Modifiers of a held item (attachments, modifications, enchantments…): items from the data store or free text,
+ * kept as one line field "a; b" */
+function ModsField({ value, index, onChange }) {
+    const mods = String(value ?? "").split(";").map((m) => m.trim()).filter(Boolean);
+    const options = useMemo(() => (index?.inCollection("Items") ?? []).map((n) => ({ label: n.name, hint: linkLabel(asList(n.fm.cat)[0] ?? "") })), [index]);
+    const [k, setK] = useState(0); // remounts the picker after each add, so its box empties
+    const set = (list) => onChange(list.join("; "));
+    const add = (o) => {
+        if (!o) return;
+        const name = o.label.replace(/;/g, ",");
+        const m = !o.free || index?.resolve(name) ? toLink(name) : name;
+        set([...mods.filter((x) => linkText(x).toLowerCase() !== name.toLowerCase()), m]);
+        setK((x) => x + 1);
+    };
+    // one modifier per line, the box to add another below them
+    return html`<div class="mods-field">
+        ${mods.length > 0 && html`<ul class="mods-list">${mods.map((m) => { const note = isLink(m) && index?.resolve(m); return html`<li><span>${note ? html`<a href=${noteHref(note.path)} data-page>${linkText(m)}</a>` : linkText(m)}</span>
+            <button type="button" class="chip-x" title="Remove" aria-label=${`Remove ${linkText(m)}`} onClick=${() => set(mods.filter((x) => x !== m))}>×</button></li>`; })}</ul>`}
+        <${Picker} key=${k} value="" options=${options} placeholder="Add a modifier: an item, or text like +2 sharpness" onChange=${add} /></div>`;
+}
+
 function LinesEditor({ behaviour, lines, setLines, index, novel, owner, createNotes, setCreateNotes, withTarget }) {
     const [creating, setCreating] = useState(null); // {row, name}
+    const [details, setDetails] = useState(() => new Set()); // rows showing rarity and modifiers
+    // (an item chosen in the drawer arrives later: it goes into the lines as they are then)
+    const latest = useRef({ lines, setLines });
+    latest.current = { lines, setLines };
+    const rarities = useMemo(() => rankedOptions(index, "Taxonomy/Rarity"), [index]);
     const owners = useMemo(() => [...new Set([...novel.characters.map((c) => c.name), ...novel.ledgers.map((l) => l.owner)])].filter((o) => o !== owner).map((o) => ({ label: o })), [novel, owner]);
-    const conditions = index?.inCollection("Taxonomy/Item Condition").map((n) => n.fm.title ?? n.name) ?? [];
+    const conditions = useMemo(() => rankedOptions(index, "Taxonomy/Item Condition"), [index]);
     const upd = (i, patch) => setLines(lines.map((l, j) => (j === i ? { ...l, ...patch } : l)));
     const remove = (i) => setLines(lines.filter((_, j) => j !== i));
     if (behaviour === "state") {
@@ -1877,19 +2209,27 @@ function LinesEditor({ behaviour, lines, setLines, index, novel, owner, createNo
             <datalist id="setfields">${[...new Set([...(novel.setFields ?? []), ...(index?.schema.characters?.fields.map(([k]) => k) ?? [])])].map((f) => html`<option value=${f} />`)}</datalist>
             <button class="small" onClick=${() => setLines([...lines, withTarget ? { set: "relation", with: "", value: "" } : { set: "", value: "" }])}>+ Line</button>`;
     }
-    return html`<table class="lines-editor"><thead><tr><th style="width:110px">action</th><th>item</th><th style="width:70px">qty</th><th style="width:64px">unit</th><th style="width:110px">condition</th><th>store</th><th>to</th><th>note</th><th></th></tr></thead><tbody>
-        ${lines.map((l, i) => html`<tr>
+    const browse = (i) => browseItems({ label: `line ${i + 1}`, pick: (name) => { const { lines: ls, setLines: set } = latest.current; set(ls.map((l, j) => (j === i ? { ...l, item: toLink(name) } : l))); } });
+    const toggleDetails = (i) => setDetails((d) => { const n = new Set(d); n.has(i) ? n.delete(i) : n.add(i); return n; });
+    return html`<table class="lines-editor"><thead><tr><th style="width:110px">action</th><th>item</th><th style="width:70px">qty</th><th style="width:64px">unit</th><th style="width:110px">condition</th><th>store</th><th>to</th><th>note</th><th></th><th></th></tr></thead><tbody>
+        ${lines.map((l, i) => { const showDetails = details.has(i) || !!l.rarity || !!l.mods; return html`<tr>
             <td><select value=${l.action ?? "add"} onChange=${(e) => upd(i, { action: e.target.value })}>${ACTIONS.map((a) => html`<option>${a}</option>`)}</select></td>
-            <td><${ItemPicker} value=${l.item} index=${index} onChange=${(v) => upd(i, { item: v })} onCreate=${(name) => setCreating({ row: i, name })} />
+            <td><div class="item-cell"><${ItemPicker} value=${l.item} index=${index} onChange=${(v) => upd(i, { item: v })} onCreate=${(name) => setCreating({ row: i, name })} />
+                <button type="button" class="small" title="Browse the items (and materials) in the side drawer: filter, open, or create one, then add it" onClick=${() => browse(i)}>Browse</button></div>
                 ${createNotes.some((c) => toLink(c.name) === l.item) && html`<span class="badge ok">new entry</span>`}</td>
             <td><input value=${l.qty ?? "1"} onInput=${(e) => upd(i, { qty: e.target.value })} /></td>
             <td><select value=${l.unit ?? "ea"} onChange=${(e) => upd(i, { unit: e.target.value === "ea" ? "" : e.target.value })}>${UNITS.map((u) => html`<option>${u}</option>`)}</select></td>
-            <td><select value=${l.condition ?? ""} onChange=${(e) => upd(i, { condition: e.target.value ? toLink(e.target.value) : "" })}><option value=""></option>${conditions.map((c) => html`<option value=${c} selected=${linkLabel(l.condition ?? "") === c}>${c}</option>`)}</select></td>
+            <td>${rankedSelect(conditions, l.condition, "", (v) => upd(i, { condition: v }))}</td>
             <td><input list="stores" value=${l.store ?? ""} placeholder="inventory" onInput=${(e) => upd(i, { store: e.target.value })} /></td>
             <td>${l.action === "transfer-out" ? html`<${Picker} value=${linkLabel(l.to ?? "")} options=${owners} placeholder="receiver" onChange=${(o) => upd(i, { to: o ? toLink(o.label) : "" })} />`
                 : l.action === "move" ? html`<input list="stores" value=${l["to-store"] ?? ""} placeholder="to store" onInput=${(e) => upd(i, { "to-store": e.target.value })} />` : ""}</td>
             <td><input value=${l.note ?? ""} onInput=${(e) => upd(i, { note: e.target.value })} /></td>
-            <td><${ConfirmButton} confirmLabel="Confirm" onConfirm=${() => remove(i)}>×<//></td></tr>`)}
+            <td><button type="button" class=${`small ${showDetails ? "on" : ""}`} title="Rarity and modifiers of this item" aria-expanded=${showDetails} onClick=${() => toggleDetails(i)}>${l.rarity || l.mods ? "Details ●" : "Details"}</button></td>
+            <td><${ConfirmButton} confirmLabel="Confirm" onConfirm=${() => remove(i)}>×<//></td></tr>
+            ${showDetails && html`<tr class="line-details"><td></td><td colspan="9"><div class="details-grid">
+                <span class="muted">Rarity</span><div>${rankedSelect(rarities, l.rarity, "as the item", (v) => upd(i, { rarity: v }))}</div>
+                <span class="muted">Modifiers</span><${ModsField} value=${l.mods} index=${index} onChange=${(v) => upd(i, { mods: v })} />
+            </div></td></tr>`}`; })}
         </tbody></table>
         <datalist id="stores">${["inventory", ...(novel.stores ?? [])].map((s) => html`<option value=${s} />`)}</datalist>
         <button class="small" onClick=${() => setLines([...lines, { action: "add", item: "", qty: "1" }])}>+ Line</button>
@@ -1984,6 +2324,8 @@ function StatLinesEditor({ template, before, lines, setLines, index }) {
 
 function EntryEditor({ index, folder, params }) {
     const { data: novel } = useApi(`/api/novel?${qs({ folder })}`);
+    // leaving the entry ends any item choosing it started in the drawer
+    useEffect(() => () => { if (itemPick) setItemPick(null); }, []);
     const editKey = params.get("key");
     const [owner, setOwner] = useState(params.get("owner") ?? "");
     const [typeName, setTypeName] = useState(params.get("type") ?? "Inventory");
@@ -2084,7 +2426,7 @@ function EntryEditor({ index, folder, params }) {
                     ${preview?.error ? html`<p class="error">${preview.error}</p>` : preview ? html`<pre class="callout-text">${preview.callout}</pre><${CalloutRender} text=${preview.callout} />` : html`<p class="muted">Choose an owner to preview.</p>`}
                 </div>
                 ${preview?.warnings?.length > 0 && html`<div class="warnbox">${preview.warnings.map((w) => html`<div>${w.message}</div>`)}</div>`}
-                ${preview?.after && html`<div class="panel"><b>Held after this entry (chapter ${entry.chapter})</b>${holdingsTable(preview.after)}</div>`}
+                ${preview?.after && html`<div class="panel"><b>Held after this entry (chapter ${entry.chapter})</b>${holdingsTable(preview.after, index)}</div>`}
                 ${preview?.stats?.panel && html`<div class="panel"><div class="spread"><b>Stats panel after this entry</b><button class="small" onClick=${() => copyText(preview.stats.panel, "Copied stats panel")}>⧉ Copy</button></div>
                     <${CalloutRender} text=${preview.stats.panel} /></div>`}
             </div>
@@ -2255,9 +2597,10 @@ function App() {
         case "edit": // old edit links: notes are editable on their page
         case "note": view = html`<${NoteView} key=${a} index=${index} path=${a} />`; break;
         case "new": view = html`<${NoteForm} key=${a} index=${index} collection=${a} />`; break;
+        case "newrecipe": view = html`<${RecipeCreator} key=${a} index=${index} item=${a} />`; break;
         case "newchar": view = html`<${NoteForm} key=${a} index=${index} collection="characters" novel=${a} />`; break;
         case "novel": view = html`<${NovelView} key=${a} folder=${a} />`; break;
-        case "owner": view = html`<${OwnerView} key=${a + b} folder=${a} owner=${b} params=${route.params} />`; break;
+        case "owner": view = html`<${OwnerView} key=${a + b} index=${index} folder=${a} owner=${b} params=${route.params} />`; break;
         case "chapter": view = html`<${ChapterView} key=${a + b} folder=${a} n=${b} />`; break;
         case "entry": view = html`<${EntryEditor} key=${location.hash} index=${index} folder=${a} params=${route.params} />`; break;
         case "callouts": view = html`<${CalloutSettings} key=${a} folder=${a} />`; break;

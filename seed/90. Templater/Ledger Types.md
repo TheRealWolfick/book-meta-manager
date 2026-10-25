@@ -15,19 +15,19 @@ ledger-types:
       default: |-
         [!inventory] {{ownerName}}
         {{#added}}
-        - {{qtyText}} {{item}}{{plural}} added to {{destination}}{{#condition}} ({{condition}}){{/condition}}
+        - {{qtyText}} {{item}}{{plural}} added to {{destination}}{{details}}
         {{/added}}
         {{#removed}}
-        - {{qtyText}} {{item}}{{plural}} removed from {{source}}{{#note}} ({{note}}){{/note}}
+        - {{qtyText}} {{item}}{{plural}} removed from {{source}}{{#note}} ({{note}}){{/note}}{{details}}
         {{/removed}}
         {{#transferredOut}}
-        - {{qtyText}} {{item}}{{plural}} given to {{toName}}
+        - {{qtyText}} {{item}}{{plural}} given to {{toName}}{{details}}
         {{/transferredOut}}
         {{#transferredIn}}
-        - {{qtyText}} {{item}}{{plural}} received from {{fromName}}
+        - {{qtyText}} {{item}}{{plural}} received from {{fromName}}{{details}}
         {{/transferredIn}}
         {{#moved}}
-        - {{qtyText}} {{item}}{{plural}} moved to {{destination}}
+        - {{qtyText}} {{item}}{{plural}} moved to {{destination}}{{details}}
         {{/moved}}
         {{eventLink}}
       grouped: |-
@@ -35,13 +35,13 @@ ledger-types:
         {{#items}}
         ##### Items
         {{#lines}}
-        - {{qtyText}} {{item}}{{plural}} ({{action}})
+        - {{qtyText}} {{item}}{{plural}} ({{action}}){{details}}
         {{/lines}}
         {{/items}}
         {{#materials}}
         ##### Materials
         {{#lines}}
-        - {{qtyText}} {{item}} ({{action}})
+        - {{qtyText}} {{item}} ({{action}}){{details}}
         {{/lines}}
         {{/materials}}
         {{eventLink}}
